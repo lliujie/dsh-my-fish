@@ -1768,6 +1768,18 @@ function normalizeDispose(registered) {
   return cleanup;
 }
 
+// 宿主装了 auth 插件时用它判一次。插件只声明了 inject=['webServer']，直接读 ctx.connection
+// 会抛「cannot get property connection without inject」——抛了就按匿名处理，后面还有回环校验兜底。
+async function requestRejectionOf(ctx, req) {
+  try {
+    const connection = ctx ? ctx.connection : null;
+    if (connection && typeof connection.requestRejection === 'function') return await connection.requestRejection(req);
+  } catch {
+    /* 没声明 inject / 没这个服务：当匿名 */
+  }
+  return null;
+}
+
 export function apply(ctx) {
   const log = (ctx && typeof ctx.logger === 'function' ? ctx.logger(name) : null) || console;
   const route = {
@@ -1775,10 +1787,8 @@ export function apply(ctx) {
     path: API_BASE,
     async handler(req, res) {
       try {
-        const rejection = ctx.connection && typeof ctx.connection.requestRejection === 'function'
-          ? ctx.connection.requestRejection(req)
-          : null;
-        if (rejection) {
+        const rejection = await requestRejectionOf(ctx, req);
+        if (rejection === 401 || rejection === 403) {
           res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' });
           res.end(rejection === 401 ? 'unauthorized' : 'forbidden');
           return;
