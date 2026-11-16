@@ -25,7 +25,7 @@ const BODY_LIMIT = 4 * 1024 * 1024;
 const TEXT_LIMIT = 1024 * 1024;
 const TREE_LIMIT = 900;
 const SCENE_LIMIT = 60;
-const PANEL_TYPES = ['harness', 'file', 'view', 'web', 'note', 'reserved'];
+const PANEL_TYPES = ['harness', 'file', 'view', 'web', 'note', 'layers', 'reserved'];
 const NOTE_SOURCES = ['context', 'memory'];
 
 const PREVIEW_DPI = 110;
@@ -330,6 +330,147 @@ async function readSceneDocs(root, scene) {
   const context = decodeText(await fsp.readFile(paths.context));
   const memory = decodeText(await fsp.readFile(paths.memory));
   return { context, memory };
+}
+
+/* -------------------------------------------------- 记忆层（L0 宪法 / L1 共享 / L2 场景 / L3 项目） */
+
+const RULE_DIR = '宪法';
+const SHARED_DIR = '共享层';
+const PROJECT_DIR = '项目记忆';
+const LAYER_DOC_LIMIT = 60000;
+
+const ruleDirOf = (root) => path.join(root, RULE_DIR);
+const sharedDirOf = (root) => path.join(root, SHARED_DIR);
+const projectDirOf = (root, sceneId) => path.join(sceneDocDirOf(root, sceneId), PROJECT_DIR);
+
+function safeDocName(value) {
+  const cleaned = String(value || '')
+    .replace(/[\\/:*?"<>|]/g, '')
+    .replace(/\s+$/, '')
+    .trim();
+  if (!cleaned) return '';
+  return /\.(md|txt)$/i.test(cleaned) ? cleaned : `${cleaned}.md`;
+}
+
+async function readDocDir(root, dir, kind) {
+  const out = [];
+  let entries = [];
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name.startsWith('.')) continue;
+    if (!/\.(md|txt)$/i.test(entry.name)) continue;
+    const abs = path.join(dir, entry.name);
+    try {
+      const stat = await fsp.stat(abs);
+      const raw = await fsp.readFile(abs);
+      const text = raw.length > LAYER_DOC_LIMIT
+        ? `${decodeText(raw.subarray(0, LAYER_DOC_LIMIT))}\n\n…（内容超过 ${Math.round(LAYER_DOC_LIMIT / 1000)}K，已截断）`
+        : decodeText(raw);
+      out.push({
+        kind,
+        name: entry.name,
+        path: abs,
+        rel: path.relative(root, abs).split(path.sep).join('/'),
+        text,
+        size: stat.size,
+        mtimeMs: Math.round(stat.mtimeMs)
+      });
+    } catch {
+      /* 跳过读不了的文件 */
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  return out;
+}
+
+/** 场景相关的全部记忆层：L0 宪法 → L1 共享层 → L2 场景（定位卡/场景记忆）→ L3 项目记忆 */
+async function readLayers(root, scene) {
+  const paths = await ensureSceneDocs(root, scene);
+  const sceneDocs = [];
+  for (const entry of [
+    { kind: 'context', name: CONTEXT_FILE, abs: paths.context },
+    { kind: 'memory', name: MEMORY_FILE, abs: paths.memory }
+  ]) {
+    try {
+      const stat = await fsp.stat(entry.abs);
+      sceneDocs.push({
+        kind: entry.kind,
+        name: entry.name,
+        path: entry.abs,
+        rel: path.relative(root, entry.abs).split(path.sep).join('/'),
+        text: decodeText(await fsp.readFile(entry.abs)),
+        size: stat.size,
+        mtimeMs: Math.round(stat.mtimeMs)
+      });
+    } catch {
+      /* 忽略 */
+    }
+  }
+  const [constitution, shared, projects] = await Promise.all([
+    readDocDir(root, ruleDirOf(root), 'constitution'),
+    readDocDir(root, sharedDirOf(root), 'shared'),
+    readDocDir(root, projectDirOf(root, scene.id), 'project')
+  ]);
+  return {
+    id: scene.id,
+    name: scene.name,
+    root: scene.root || '',
+    docs: sceneDocs,
+    constitution,
+    shared,
+    projects
+  };
+}
+
+async function saveLayer(root, scene, kind, name, text) {
+  const body = String(text == null ? '' : text);
+  if (Buffer.byteLength(body, 'utf8') > TEXT_LIMIT) throw fail(413, 'TOO_LARGE', '内容超过 1 MB');
+  const paths = await ensureSceneDocs(root, scene);
+  if (kind === 'context') {
+    await fsp.writeFile(paths.context, body, 'utf8');
+    return { kind, path: paths.context };
+  }
+  if (kind === 'memory') {
+    await fsp.writeFile(paths.memory, body, 'utf8');
+    return { kind, path: paths.memory };
+  }
+  const fileName = safeDocName(name);
+  if (!fileName) throw fail(400, 'BAD_NAME', '文件名不能为空');
+  const dir = kind === 'constitution'
+    ? ruleDirOf(root)
+    : kind === 'shared'
+      ? sharedDirOf(root)
+      : kind === 'project'
+        ? projectDirOf(root, scene.id)
+        : '';
+  if (!dir) throw fail(400, 'BAD_KIND', '不认识的记忆层：' + kind);
+  await fsp.mkdir(dir, { recursive: true });
+  const abs = path.join(dir, fileName);
+  await fsp.writeFile(abs, body, 'utf8');
+  return { kind, name: fileName, path: abs };
+}
+
+async function createLayerDoc(root, scene, kind, name) {
+  const fileName = safeDocName(name);
+  if (!fileName) throw fail(400, 'BAD_NAME', '文件名不能为空');
+  const dir = kind === 'constitution'
+    ? ruleDirOf(root)
+    : kind === 'shared'
+      ? sharedDirOf(root)
+      : kind === 'project'
+        ? projectDirOf(root, scene.id)
+        : '';
+  if (!dir) throw fail(400, 'BAD_KIND', '不认识的记忆层：' + kind);
+  await fsp.mkdir(dir, { recursive: true });
+  const abs = path.join(dir, fileName);
+  if (existsSync(abs)) throw fail(409, 'EXISTS', '已经有同名文件：' + fileName);
+  const title = fileName.replace(/\.(md|txt)$/i, '');
+  await fsp.writeFile(abs, `# ${title}\n\n`, 'utf8');
+  return { kind, name: fileName, path: abs };
 }
 
 async function sceneIndex(root) {
@@ -1019,23 +1160,40 @@ async function runCommand(ctx, sessionId, line) {
   };
 }
 
-/** 认领身份：把「查索引 → 读定位卡 → 读 §〇 → 报进度」四步发给会话 */
+/** 认领身份：把「读铁律 → 读共享层 → 查索引 → 读定位卡 → 读 §〇 → 报进度」发给会话 */
 async function claimText(ctx, root, scene, panel) {
   const docs = await readSceneDocs(root, scene);
   const memory = docs.memory.split(/\r?\n/).slice(0, 24).join('\n');
+  const layers = await readLayers(root, scene);
+  const rules = layers.constitution[0];
+  const profile = layers.shared.find((doc) => doc.name.includes('宿主画像'));
+  const todo = layers.shared.find((doc) => doc.name.includes('待办'));
+  const projectNames = layers.projects.map((doc) => doc.name.replace(/\.(md|txt)$/i, ''));
   return [
     `你是「${scene.name}」这个场景的常驻智能体（面板：${panel.title}）。`,
     `场景 id：${scene.id}；工作根目录：${scene.root || '（未设）'}。`,
     '',
     '认领身份的步骤：',
-    '1. 读定位卡：' + sceneContextFile(root, scene.id),
-    '2. 读场景记忆的 §〇 交接：' + sceneMemoryFile(root, scene.id),
-    '3. 用一两句话回报：这个场景是做什么的、现在做到哪、下一步是什么。',
+    '1. 读宪法层全局铁律：' + (rules ? rules.path : ruleDirOf(root)),
+    '2. 读共享层的宿主画像与待办板：' + sharedDirOf(root),
+    '3. 读定位卡：' + sceneContextFile(root, scene.id),
+    '4. 读场景记忆的 §〇 交接：' + sceneMemoryFile(root, scene.id),
+    '5. 项目记忆目录：' + projectDirOf(root, scene.id) + (projectNames.length ? `（现有：${projectNames.join('、')}）` : '（还没有项目记忆）'),
+    '6. 用两三句话回报：这个场景是做什么的、现在做到哪、下一步是什么；然后等宿主指令。',
     '',
-    '定位卡内容：',
+    '== 宪法层 · 全局铁律 ==',
+    rules ? rules.text.slice(0, 3000) : '（宪法目录下还没有文件）',
+    '',
+    '== 共享层 · 宿主画像 ==',
+    profile ? profile.text.slice(0, 1500) : '（还没有宿主画像）',
+    '',
+    '== 共享层 · 待办板 ==',
+    todo ? todo.text.slice(0, 1200) : '（还没有待办板）',
+    '',
+    '== 定位卡 ==',
     docs.context.slice(0, 4000),
     '',
-    '场景记忆开头（§〇）：',
+    '== 场景记忆开头（§〇） ==',
     memory
   ].join('\n');
 }
@@ -1409,6 +1567,13 @@ async function handleGet(ctx, req, res, route, params, root) {
     return;
   }
 
+  if (route === '/layers') {
+    const scene = await readScene(root, String(params.get('id') || ''));
+    if (!scene) throw fail(404, 'NO_SCENE', '找不到这个场景');
+    sendJson(res, 200, { ok: true, value: await readLayers(root, scene) });
+    return;
+  }
+
   if (route === '/sessions') {
     sendJson(res, 200, { ok: true, value: { items: await listSessions(ctx) } });
     return;
@@ -1507,6 +1672,28 @@ async function handlePost(ctx, req, res, route, root) {
     if (!scene) throw fail(404, 'NO_SCENE', '找不到这个场景');
     const source = NOTE_SOURCES.includes(payload.source) ? payload.source : 'memory';
     const value = await saveNote(root, scene, { source }, String(payload.text || ''));
+    sendJson(res, 200, { ok: true, value });
+    return;
+  }
+
+  if (route === '/layer/save') {
+    const scene = await readScene(root, String(payload.sceneId || ''));
+    if (!scene) throw fail(404, 'NO_SCENE', '找不到这个场景');
+    const value = await saveLayer(
+      root,
+      scene,
+      String(payload.kind || ''),
+      String(payload.name || ''),
+      String(payload.text || '')
+    );
+    sendJson(res, 200, { ok: true, value });
+    return;
+  }
+
+  if (route === '/layer/create') {
+    const scene = await readScene(root, String(payload.sceneId || ''));
+    if (!scene) throw fail(404, 'NO_SCENE', '找不到这个场景');
+    const value = await createLayerDoc(root, scene, String(payload.kind || ''), String(payload.name || ''));
     sendJson(res, 200, { ok: true, value });
     return;
   }

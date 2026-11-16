@@ -1,4 +1,4 @@
-# 大肥鱼 3.0 · 详细说明
+# 大肥鱼 3.1 · 详细说明
 
 面向要改它、或在它上面加东西的人。
 
@@ -90,6 +90,14 @@ iframe + 缩放（0.6–1.8，`transform:scale` 配合 `width/height:100/zoom%`�
 
 `GET /scene/notes?id` 读两份文档，`POST /scene/note` 写；停手 1.2 秒自动保存。
 
+### layers（3.1.0）
+
+四个页签：场景（定位卡 + 场景记忆）、宪法（`<数据目录>\宪法\*.md`）、共享层（`<数据目录>\共享层\*.md`）、项目记忆（`scenes\<id>\项目记忆\*.md`）。
+
+`GET /layers?id=<场景>` 一次读齐五组文档（`docs` / `constitution` / `shared` / `projects`），每份带 `kind, name, path, rel, text, size, mtimeMs`；单份超过 60 KB 会截断并注明。
+`POST /layer/save` 写回磁盘（超过 1 MB 抛 413）；`POST /layer/create` 新建（同名 409，名字为空 400）。
+面板右侧 textarea 停手 1.2 秒自动保存，与 AI 会话读写的是同一份文件，不存在「面板里的副本」。
+
 ### reserved
 
 占位卡：显示标题、说明、场景与面板 id。想把这块换成网页 / 清单 / 图表，改场景 JSON 的 `type` 即可。
@@ -112,6 +120,8 @@ iframe + 缩放（0.6–1.8，`transform:scale` 配合 `width/height:100/zoom%`�
 | POST | `/scene/save` | 写 `<数据目录>\scenarios\<id>.json` 并补齐三件套 |
 | POST | `/scene/delete` | 只删数据目录里的场景（内置模板删不掉） |
 | GET/POST | `/scene/notes`、`/scene/note` | 读 / 写定位卡与场景记忆 |
+| GET | `/layers?id` | 记忆层：场景 / 宪法 / 共享层 / 项目记忆 五组文档 |
+| POST | `/layer/save`、`/layer/create` | 写回 / 新建记忆层文件 |
 | POST | `/settings/update` | `lastScene`、`repositoryUrl` |
 | GET | `/tree` | 列目录 |
 | GET | `/file` | 读文件信息（文本含内容） |
@@ -137,6 +147,7 @@ iframe + 缩放（0.6–1.8，`transform:scale` 配合 `width/height:100/zoom%`�
 - 数据目录：`DAFEIYU_HOME` > `PM_WORKBENCH_HOME` > `$DSH_HOME|~/.dsh` + `dafeiyu`。
 - `state.json`：`{version:3, settings:{lastScene, repositoryUrl, sessions, models}}`，原子写（tmp + rename）。
 - `preview/`：Office 位图缓存，键 = 绝对路径 + 大小 + mtime + dpi，14 天未用自动清。
-- `versions/`：版本快照；`scenes/`：身份三件套。
+- `versions/`：版本快照；`scenes/`：身份三件套（定位卡、场景记忆、`项目记忆/`）。
+- `宪法/`、`共享层/`：跨场景的 L0 / L1 记忆，记忆层面板直接读写。
 - 首次启动会从旧的 `pm-workbench` 数据目录复制一份（只复制，不删除）。
 - 桌面端 Node 没有浏览器沙箱：内嵌网页只受对方站点策略限制，插件不做注入。

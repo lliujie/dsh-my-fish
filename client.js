@@ -960,6 +960,148 @@ window.__ModuleLoader__.load({
         }));
     }
 
+    /* ------------------------------------------------------- 记忆层 L0–L3 */
+
+    const LAYER_TABS = [
+      { key: 'scene', label: '场景', kinds: ['context', 'memory'] },
+      { key: 'rules', label: '宪法', kinds: ['constitution'] },
+      { key: 'shared', label: '共享层', kinds: ['shared'] },
+      { key: 'project', label: '项目记忆', kinds: ['project'] }
+    ];
+
+    function LayersPanel(props) {
+      const { scene, panel, say } = props;
+      const [data, setData] = useState(null);
+      const [tab, setTab] = useState('scene');
+      const [picked, setPicked] = useState(null);
+      const [text, setText] = useState('');
+      const [saved, setSaved] = useState('');
+      const [loading, setLoading] = useState(true);
+      const [busy, setBusy] = useState(false);
+      const [draftName, setDraftName] = useState('');
+
+      const load = useCallback(async (keepPick) => {
+        setLoading(true);
+        try {
+          const value = await get(`/layers?id=${encodeURIComponent(scene.id)}`);
+          setData(value);
+          const all = [].concat(value.docs || [], value.constitution || [], value.shared || [], value.projects || []);
+          const next = keepPick || all[0] || null;
+          setPicked(next);
+          setText(next ? next.text : '');
+          setSaved(next ? next.text : '');
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setLoading(false);
+        }
+      }, [scene.id, say]);
+
+      useEffect(() => { void load(null); }, [load]);
+
+      const documents = data
+        ? [].concat(data.docs || [], data.constitution || [], data.shared || [], data.projects || [])
+        : [];
+      const visible = documents.filter((doc) => {
+        const group = LAYER_TABS.find((item) => item.key === tab);
+        return group ? group.kinds.includes(doc.kind) : true;
+      });
+
+      const pick = useCallback((doc) => {
+        setPicked(doc);
+        setText(doc.text || '');
+        setSaved(doc.text || '');
+      }, []);
+
+      const save = useCallback(async (options) => {
+        if (!picked || busy) return;
+        setBusy(true);
+        try {
+          await post('/layer/save', { sceneId: scene.id, kind: picked.kind, name: picked.name, text });
+          setSaved(text);
+          if (!(options && options.silent)) say('已保存', 'ok');
+          setData((prev) => {
+            if (!prev) return prev;
+            const fix = (list) => (list || []).map((doc) => (doc.kind === picked.kind && doc.name === picked.name ? { ...doc, text } : doc));
+            return { ...prev, docs: fix(prev.docs), constitution: fix(prev.constitution), shared: fix(prev.shared), projects: fix(prev.projects) };
+          });
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setBusy(false);
+        }
+      }, [scene.id, picked, text, busy, say]);
+
+      const create = useCallback(async () => {
+        const name = draftName.trim();
+        if (!name || busy) return;
+        setBusy(true);
+        try {
+          await post('/layer/create', { sceneId: scene.id, kind: tab === 'scene' ? 'project' : (tab === 'rules' ? 'constitution' : tab), name });
+          setDraftName('');
+          await load(null);
+          say('已新建 ' + name, 'ok');
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setBusy(false);
+        }
+      }, [scene.id, draftName, tab, busy, load, say]);
+
+      const dirty = Boolean(picked) && text !== saved;
+      useEffect(() => {
+        if (!dirty || loading) return undefined;
+        const timer = setTimeout(() => { void save({ silent: true }); }, 1200);
+        return () => clearTimeout(timer);
+      }, [dirty, loading, text, save]);
+
+      return h('section', { className: 'pm-pane pm-pane-layers' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' },
+            h('span', { className: 'pm-pane-dot is-note' }),
+            h('span', null, panel.title || '记忆层'),
+            h('span', { className: 'pm-pane-hint' }, dirty ? '未保存' : `${documents.length} 份`)),
+          h('div', { className: 'pm-pane-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => void load(picked) }, '刷新'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !dirty || busy, onClick: () => void save() }, busy ? '保存中…' : '保存'))),
+        h('div', { className: 'pm-layer-tabs' }, LAYER_TABS.map((item) => h('button', {
+          key: item.key,
+          type: 'button',
+          className: cx('pm-layer-tab', tab === item.key ? 'is-active' : ''),
+          onClick: () => setTab(item.key)
+        }, item.label))),
+        loading
+          ? h('div', { className: 'pm-view-loading' }, h(Spinner, null))
+          : h('div', { className: 'pm-layer-body' },
+            h('div', { className: 'pm-layer-list' },
+              visible.length
+                ? visible.map((doc) => h('button', {
+                  key: `${doc.kind}:${doc.name}`,
+                  type: 'button',
+                  className: cx('pm-layer-item', picked && picked.kind === doc.kind && picked.name === doc.name ? 'is-active' : ''),
+                  title: doc.rel || doc.path,
+                  onClick: () => pick(doc)
+                }, doc.name.replace(/\.(md|txt)$/i, '')))
+                : h('div', { className: 'pm-layer-empty' }, '这里还没有文件'),
+              h('div', { className: 'pm-layer-new' },
+                h('input', {
+                  className: 'pm-input pm-layer-new-input',
+                  placeholder: tab === 'project' ? '新项目记忆名' : '新文件名',
+                  value: draftName,
+                  onChange: (event) => setDraftName(event.target.value),
+                  onKeyDown: (event) => { if (event.key === 'Enter') void create(); }
+                }),
+                h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !draftName.trim() || busy, onClick: () => void create() }, '＋'))),
+            h('textarea', {
+              className: 'pm-note-textarea pm-layer-textarea',
+              value: text,
+              spellCheck: false,
+              disabled: !picked,
+              placeholder: picked ? '在这里直接改，停手 1.2 秒自动保存' : '左边选一份文件',
+              onChange: (event) => setText(event.target.value)
+            })));
+    }
+
     function ReservedPanel(props) {
       const { panel, scene } = props;
       return h('section', { className: 'pm-pane pm-pane-reserved' },
@@ -988,6 +1130,7 @@ window.__ModuleLoader__.load({
         if (panel.type === 'view') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(ViewPanel, shared));
         if (panel.type === 'web') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(WebPanel, shared));
         if (panel.type === 'note') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(NotePanel, shared));
+      if (panel.type === 'layers') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(LayersPanel, shared));
         return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(ReservedPanel, shared));
       };
       if (!scene.panels.length) {
@@ -1417,6 +1560,19 @@ window.__ModuleLoader__.load({
       '.pm-blocked-text{color:var(--dsw-alias-label-secondary);font-size:12px;max-width:520px;}',
       '.pm-blocked-actions{display:flex;gap:6px;margin-top:4px;}',
       '.pm-note-textarea{flex:1 1 auto;min-height:0;resize:none;border:0;outline:none;padding:10px 12px;background:transparent;color:inherit;font-size:12.5px;line-height:1.65;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}',
+      '.pm-layer-tabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-layer-tab{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:18px;padding:4px 9px;border-radius:var(--dsw-radius-sm) var(--dsw-radius-sm) 0 0;cursor:pointer;transition:background-color .12s,color .12s;}',
+      '.pm-layer-tab:hover{background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);}',
+      '.pm-layer-tab.is-active{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary);}',
+      '.pm-layer-body{flex:1 1 auto;min-height:0;display:flex;}',
+      '.pm-layer-list{flex:0 0 128px;min-height:0;overflow:auto;border-right:1px solid var(--dsw-alias-border-l1);padding:6px;display:flex;flex-direction:column;gap:2px;}',
+      '.pm-layer-item{appearance:none;border:0;background:transparent;text-align:left;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:18px;padding:5px 7px;border-radius:var(--dsw-radius-sm);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color .12s,color .12s;}',
+      '.pm-layer-item:hover{background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);}',
+      '.pm-layer-item.is-active{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:500;}',
+      '.pm-layer-empty{padding:6px 7px;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-layer-new{display:flex;gap:4px;margin-top:auto;padding-top:6px;}',
+      '.pm-layer-new-input{flex:1 1 auto;min-width:0;font-size:11px;height:24px;padding:0 6px;}',
+      '.pm-layer-textarea{padding:8px 10px;}',
       '.pm-reserved-body{flex:1 1 auto;margin:8px;padding:12px;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);display:flex;flex-direction:column;justify-content:center;gap:6px;}',
       '.pm-reserved-title{font-weight:600;font-size:12.5px;color:var(--dsw-alias-label-secondary);}',
       '.pm-reserved-text{font-size:12px;color:var(--dsw-alias-label-secondary);}',
