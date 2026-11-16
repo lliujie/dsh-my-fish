@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Big Fish",
+    "description": "A modular local workbench: projects (file tree, inline editing, inline document preview, in-panel chat), a site ledger with environment groups and status lights, and a version center with changelog and one-click rollback.",
+    "detail": "docs/DETAIL.md"
+  }
+}
