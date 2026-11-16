@@ -2,7 +2,7 @@
 
 面向技术部项目经理的 DSH 插件（前身「工作台」1.2.0）：把「一堆项目文件夹 + 文档产出 + 多智能体分工 + 跨项目汇报 + 环境地址台账 + 插件自身版本 + 代码提交记录」收进一个面板。
 
-> 当前版本 **2.1.1**：站点能直接粘地址加；项目页文件树 / AI 栏可一键收起，「专注」只留文档；版本页能看到 git / GitHub 的最近提交，仓库地址直接在面板里填。
+> 当前版本 **2.1.3**：站点能直接粘地址加；项目页文件树 / AI 栏可一键收起，「专注」只留文档；版本页能看到 git / GitHub 的最近提交，仓库地址直接在面板里填。2.1.3 起打包时会把提交记录写进 `gitlog.json`，**离线或被限流也能看到最近 20 条**。
 
 ## 三个模块页签：项目 / 站点 / 版本
 
@@ -23,7 +23,7 @@
   - 每次 Host 启动自动快照（同一份代码指纹去重），也可手动「备份当前版本」；
   - 历史快照列表 + 一键回滚，回滚前会自动把当前版本再存一份，可来回滚；
   - 快照覆盖 `index.js / client.js / package.json / version.json / cordis.patch.yml / icon.svg`，最多 200 条；
-  - **提交记录**：插件目录是 git 仓库时读本地提交；否则读「提交记录」上方输入框里填的 GitHub 仓库地址（再退到 `version.json` 的 `repository.url`）。最近 20 条：短 hash、说明、日期、作者，旁边「逛仓库」直接开浏览器。
+  - **提交记录**：优先级 插件目录的 `.git` → 「提交记录」上方输入框里填的地址 → `version.json` 的 `repository.url` → 打包时写进 `gitlog.json` 的提交。前三种要联网（GitHub 公开 API）或在本地有仓库；最后一种**离线也能用**，联网失败时自动顶上。最近 20 条：短 hash、说明、日期、作者，旁边「逛仓库」直接开浏览器。
 
 ## 就地改文档，AI 随时接手
 
@@ -80,22 +80,25 @@ _pm/
    cd F:\dsh\dafeiyu\v2
    git init
    git add -A
-   git commit -m "大肥鱼 2.1.1"
+   git commit -m "大肥鱼 2.1.3"
    git remote add origin https://github.com/<你的账号>/dafeiyu.git
    git push -u origin main
    ```
 
 2. 打开面板「版本」页签，在「提交记录」上方的输入框里粘上仓库地址（`https://github.com/<你的账号>/dafeiyu`），回车或点保存。地址存在数据目录的 `settings.repositoryUrl` 里，**不用改包、不用重装**，重装插件也不丢。
 
-3. 之后版本页会读最近 20 条提交。优先级：本地 `.git` > 面板里填的地址 > `version.json` 的 `repository.url`（打包分发时可以预置）。
+3. 之后版本页会读最近 20 条提交。优先级：本地 `.git` > 面板里填的地址 > `version.json` 的 `repository.url` > 打包时写进 `gitlog.json` 的提交（离线兜底，见下一节）。
+
+> 本仓库的 `version.json` 已预置 `repository.url = https://github.com/lliujie/dsh-my-fish`，所以装上就能点「逛仓库」。
 
 ## 开发与打包
 
 - 纯 ESM、零运行时依赖、无构建步骤：`index.js` 是 Host 半（`export const name / inject / apply`），`client.js` 是浏览器半（走 `window.__ModuleLoader__.load(...)`，不 import 任何包）。
 - 改完先自检语法：`node --check index.js` 和 `node --check client.js`。
-- 本地打包：`powershell -File scripts\build-tgz.ps1`（版本号取自 `version.json`，默认输出到仓库上一级目录，打印大小与 sha256）。
+- 本地打包：`powershell -File scripts\build-tgz.ps1`（版本号取自 `version.json`，默认输出到仓库上一级目录，打印大小与 sha256）。脚本会把 `git log -n20` 的结果写进包里的 `gitlog.json`，所以装到配置档后**没有网也能显示提交记录**。
 - 推 tag 自动发版：`.github/workflows/release.yml` 在 `v*` tag 上跑语法校验、打 tgz、上传产物并建 GitHub Release。
 - 装进配置档：`plugin_manager remove_bundle @local/dafeiyu` → `plugin_manager install_bundle <tgz>`（同版本重装会被 already-installed 挡）。
+- 本机推送注意：系统开着 WinINET 代理（`127.0.0.1:7892`）时 git 不会自动用它，直连 GitHub 会报 `OpenSSL SSL_read: Connection was reset`；`scripts/push-to-github.ps1` 会自动把系统代理写进仓库的 `http.proxy`。
 
 ## 已知边界
 
@@ -103,5 +106,5 @@ _pm/
 - Office 预览是**只读位图**（不做文字选择、不解析批注），一次最多 20 页 / 20 张工作表，超出请「外部打开」。
 - 站点探测只反映「这台机器此刻能不能连通」，不判断业务是否正常。
 - 版本回滚只覆盖 6 个代码文件，不动数据目录，所以回滚不会丢项目台账。
-- 提交记录只读：本地仓库读 `git log`，远端读 GitHub 公开 API。未登录时按出口 IP 限流（每小时 60 次），私有仓库读不到；设 `GITHUB_TOKEN` / `GH_TOKEN` 环境变量即可带上鉴权。
+- 提交记录只读：本地仓库读 `git log`，远端读 GitHub 公开 API。未登录时按出口 IP 限流（每小时 60 次），私有仓库读不到；设 `GITHUB_TOKEN` / `GH_TOKEN` 环境变量即可带上鉴权。限流或断网时自动退回包里的 `gitlog.json` 快照（那是打包那一刻的提交，不是实时的）。
 - 渲染引擎优先用 DSH 自带的 `officeKit`，不可用时退回 `@deepseek-ai/libreoffice-kit`；两者都起不来时给「重试 / 用系统程序打开」退路（详见 [docs/DETAIL.md](docs/DETAIL.md)）。

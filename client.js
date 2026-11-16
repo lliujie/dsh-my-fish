@@ -2145,7 +2145,11 @@ window.__ModuleLoader__.load({
             h('div', { className: 'pm-card-hint' },
               commits && commits.source === 'git'
                 ? '来自插件目录里的本地 git 仓库' + (commits.branch ? '（分支 ' + commits.branch + '）' : '') + '，最近 20 条'
-                : '在上面的输入框里填 GitHub 仓库地址，存一次就记住（存在数据目录里，重装也不丢）；也可以写在 version.json 的 repository.url 里')),
+                : commits && commits.source === 'bundled'
+                  ? '来自打包时带上的提交记录' + (commits.builtAt ? '（' + commits.builtAt + ' 打包）' : '')
+                    + (commits.branch ? '（分支 ' + commits.branch + '）' : '')
+                    + (commits.liveError ? '；联网读取没成功：' + commits.liveError : '')
+                  : '在上面的输入框里填 GitHub 仓库地址，存一次就记住（存在数据目录里，重装也不丢）；也可以写在 version.json 的 repository.url 里')),
 
           h('section', { className: 'pm-card' },
             h('div', { className: 'pm-card-title' }, '历史快照'),

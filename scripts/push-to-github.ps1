@@ -24,6 +24,15 @@ if ($existing -contains 'origin') {
 }
 Write-Output ("远程已设：{0}" -f $Repo)
 
+# if this machine uses a system (WinINET) proxy, git does not use it by default,
+# so direct github access dies with "OpenSSL SSL_read: Connection was reset"
+$ie = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+if ($ie -and $ie.ProxyEnable -eq 1 -and $ie.ProxyServer) {
+  $proxy = "$($ie.ProxyServer)".Split(';')[0]
+  if ($proxy -notmatch '^[a-zA-Z]+://') { $proxy = 'http://' + $proxy }
+  git config --local http.proxy $proxy
+  Write-Output ("proxy for this repo: {0}" -f $proxy)
+}
 git push -u origin $Branch --tags
 if ($LASTEXITCODE -ne 0) { throw "推送失败（exit=$LASTEXITCODE）。常见原因：仓库不存在、没登录、或分支名不是 $Branch" }
 

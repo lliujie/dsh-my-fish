@@ -27,6 +27,27 @@ jobs:
           mkdir -p stage/package
           cp index.js client.js package.json version.json cordis.patch.yml icon.svg README.md stage/package/
           cp -r locale docs stage/package/
+          # 把最近 20 条提交写进包里，装到配置档后离线也能看提交记录
+          node -e "
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            const out = execSync('git log -n20 --date=short --pretty=format:%h%x1f%ad%x1f%an%x1f%s', { encoding: 'utf8' });
+            const commits = out.split('\n').filter(Boolean).map((line) => {
+              const [hash, date, author, subject] = line.split('\x1f');
+              return { hash, date, author, subject };
+            });
+            let remote = '';
+            let branch = '';
+            try { remote = execSync('git remote get-url origin', { encoding: 'utf8' }).trim(); } catch {}
+            try { branch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim(); } catch {}
+            fs.writeFileSync('stage/package/gitlog.json', JSON.stringify({
+              generatedAt: new Date().toISOString(),
+              remote,
+              branch,
+              commits
+            }, null, 2));
+            console.log('gitlog.json: ' + commits.length + ' commits, branch=' + branch);
+          "
           tar -czf "dafeiyu-${version}.tgz" -C stage package
           sha256sum "dafeiyu-${version}.tgz" | tee SHA256SUMS.txt
           ls -l "dafeiyu-${version}.tgz"

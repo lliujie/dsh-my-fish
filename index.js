@@ -472,14 +472,57 @@ async function githubLog(repositoryUrl, limit = 20) {
 }
 
 /** 版本页要显示的提交记录：优先本地仓库，其次面板里配的地址，再次 version.json */
+async function bundledGitLog(limit = 20) {
+  const dir = packageDir();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(await fsp.readFile(path.join(dir, 'gitlog.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const list = Array.isArray(parsed && parsed.commits) ? parsed.commits : [];
+  const commits = list
+    .filter((item) => item && item.subject)
+    .slice(0, limit)
+    .map((item) => ({
+      hash: String(item.hash || ''),
+      date: String(item.date || ''),
+      author: String(item.author || ''),
+      subject: String(item.subject || '')
+    }));
+  if (!commits.length) return null;
+  return {
+    source: 'bundled',
+    available: true,
+    dir,
+    remote: String((parsed && parsed.remote) || ''),
+    branch: String((parsed && parsed.branch) || ''),
+    builtAt: String((parsed && parsed.generatedAt) || ''),
+    commits
+  };
+}
+
 async function commitLog(manifest, limit = 20, settingsUrl = '') {
   const local = await localGitLog(limit);
   if (local.available) return local;
   const repository = manifest && manifest.repository ? manifest.repository : null;
   const fromManifest = typeof repository === 'string' ? repository : (repository && repository.url) || '';
   const url = String(settingsUrl || '').trim() || fromManifest;
-  if (!url) return { source: 'none', available: false, commits: [], remote: '', error: '还没配置 GitHub 仓库地址：在版本页的输入框里填一下仓库地址就行' };
+  if (!url) {
+    const bundled = await bundledGitLog(limit);
+    if (bundled) return bundled;
+    return { source: 'none', available: false, commits: [], remote: '', error: '还没配置 GitHub 仓库地址：在版本页的输入框里填一下仓库地址就行' };
+  }
   const remote = await githubLog(url, limit);
+  if (remote && remote.available) return remote;
+  const bundled = await bundledGitLog(limit);
+  if (bundled) {
+    return Object.assign(bundled, {
+      remote: bundled.remote || url,
+      liveError: String((remote && remote.error) || ''),
+      note: '联网读取没成功，先显示打包时带上的提交记录'
+    });
+  }
   return remote;
 }
 

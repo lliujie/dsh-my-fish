@@ -18,6 +18,22 @@ foreach ($name in $files) { Copy-Item (Join-Path $root $name) (Join-Path $stage 
 Copy-Item (Join-Path $root 'locale') (Join-Path $stage 'package\locale') -Recurse
 Copy-Item (Join-Path $root 'docs') (Join-Path $stage 'package\docs') -Recurse
 
+# embed recent git commits so an installed copy can show them offline
+$logLines = @()
+try { $logLines = @(git -C $root log -n20 --date=short --pretty=format:"%h%x1f%ad%x1f%an%x1f%s" 2>$null) } catch { $logLines = @() }
+$commits = @()
+foreach ($line in $logLines) {
+  if ([string]::IsNullOrWhiteSpace($line)) { continue }
+  $parts = $line -split ([string][char]0x1f)
+  if ($parts.Count -lt 4) { continue }
+  $commits += [ordered]@{ hash = $parts[0]; date = $parts[1]; author = $parts[2]; subject = ($parts[3..($parts.Count - 1)] -join ' ') }
+}
+$remote = ''
+$branch = ''
+try { $remote = "$(git -C $root remote get-url origin 2>$null)".Trim() } catch { }
+try { $branch = "$(git -C $root rev-parse --abbrev-ref HEAD 2>$null)".Trim() } catch { }
+$gitlog = [ordered]@{ generatedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'); remote = $remote; branch = $branch; commits = $commits }
+[System.IO.File]::WriteAllText((Join-Path $stage 'package\gitlog.json'), ($gitlog | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
 if (Test-Path $tgz) { Remove-Item $tgz -Force }
 tar -czf $tgz -C $stage package
 if ($LASTEXITCODE -ne 0) { throw "tar 打包失败，exit=$LASTEXITCODE" }

@@ -17,7 +17,7 @@
 │ 正式环境  ● 订单系统  https://xxx       …                        │
 └──────────────────────────────────────────────────────────────────┘
 ┌ 版本 ───────────────────────────────────────────────────────────┐
-│ 当前 v2.1.1 · 变更日志 · 提交记录（本地 git / GitHub 最近 20 条） │
+│ 当前 v2.1.3 · 变更日志 · 提交记录（git / GitHub / 打包快照） │
 │ 历史快照（每次启动/手动/回滚前自动记录）                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -64,7 +64,7 @@
 - 快照范围：`index.js`、`client.js`、`package.json`、`version.json`、`cordis.patch.yml`、`icon.svg`（不含 docs/截图，省空间）；历史最多 200 条。
 - 回滚：选中一条 → 二次确认 → 用快照文件覆盖插件目录 → 记一条 `rollback` 记录。**客户端改动按 Ctrl+R 刷新即生效；Host 侧（index.js）需要重启 DSH**。回滚本身不丢版本：回滚前那份会被自动存下来，可以再回滚回去。
 - 快照目录：`<数据目录>/versions/<版本号>-<时间戳>/`，索引 `versions/history.json`。
-- 提交记录：GET `/version` 额外返回 `commits` 与 `repositoryUrl`。地址来源优先级：插件目录有 `.git` → 读本地（`git log -n20`、`remote get-url origin`、当前分支）；否则用 `state.settings.repositoryUrl`（面板里填的，存 `<数据目录>/state.json`）；再退到 `version.json` 的 `repository.url`。远端调 `https://api.github.com/repos/<owner>/<repo>/commits?per_page=20`（8 秒超时）；有 `GITHUB_TOKEN` / `GH_TOKEN` 环境变量就带 `Authorization: Bearer`。失败把原因放进 `commits.error`（404=仓库地址错或私有、403/429=限流），页面照常显示。
+- 提交记录：GET `/version` 额外返回 `commits` 与 `repositoryUrl`。地址来源优先级：插件目录有 `.git` → 读本地（`git log -n20`、`remote get-url origin`、当前分支）；否则用 `state.settings.repositoryUrl`（面板里填的，存 `<数据目录>/state.json`）；再退到 `version.json` 的 `repository.url`。以上都拿不到时（或远端读取失败），回退到包内的 `gitlog.json`（`scripts/build-tgz.ps1` 打包时用 `git log -n20` 生成，字段 `generatedAt/remote/branch/commits`），返回 `source: "bundled"` 并附 `liveError` 说明联网失败原因。远端调 `https://api.github.com/repos/<owner>/<repo>/commits?per_page=20`（8 秒超时）；有 `GITHUB_TOKEN` / `GH_TOKEN` 环境变量就带 `Authorization: Bearer`。失败把原因放进 `commits.error`（404=仓库地址错或私有、403/429=限流），页面照常显示。
 
 ## 文件
 
@@ -149,7 +149,7 @@ AI（主智能体或子智能体）直接在磁盘上改同一个文件时，编
 | POST | `/sites/save` | `{groups, sites}` 全量替换（分组不可为空） |
 | POST | `/sites/probe` | `{ids?}` 探测，空数组=全部；返回 `{fresh, statuses}` |
 | POST | `/openlink` | `{url}` 用默认浏览器打开站点 |
-| GET | `/version` | 当前版本 + 变更日志 + 代码指纹 + 数据目录 + 历史快照 + `repositoryUrl` + `commits`（本地 git 或 GitHub） |
+| GET | `/version` | 当前版本 + 变更日志 + 代码指纹 + 数据目录 + 历史快照 + `repositoryUrl` + `commits`（本地 git / GitHub / 包内 gitlog.json，`source` 分别为 `git` / `github` / `bundled`） |
 | POST | `/version/snapshot` | `{note?}` 手动备份当前代码 |
 | POST | `/version/rollback` | `{id}` 回滚到指定快照（先自动备份当前版本） |
 | POST | `/version/repository` | `{url}` 记住 GitHub 仓库地址（空串=清除），存在 `state.json` 的 `settings.repositoryUrl` |
