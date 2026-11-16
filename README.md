@@ -89,6 +89,14 @@ _pm/
 
 3. 之后版本页会读最近 20 条提交。优先级：本地 `.git` > 面板里填的地址 > `version.json` 的 `repository.url`（打包分发时可以预置）。
 
+## 开发与打包
+
+- 纯 ESM、零运行时依赖、无构建步骤：`index.js` 是 Host 半（`export const name / inject / apply`），`client.js` 是浏览器半（走 `window.__ModuleLoader__.load(...)`，不 import 任何包）。
+- 改完先自检语法：`node --check index.js` 和 `node --check client.js`。
+- 本地打包：`powershell -File scripts\build-tgz.ps1`（版本号取自 `version.json`，默认输出到仓库上一级目录，打印大小与 sha256）。
+- 推 tag 自动发版：`.github/workflows/release.yml` 在 `v*` tag 上跑语法校验、打 tgz、上传产物并建 GitHub Release。
+- 装进配置档：`plugin_manager remove_bundle @local/dafeiyu` → `plugin_manager install_bundle <tgz>`（同版本重装会被 already-installed 挡）。
+
 ## 已知边界
 
 - 面板内对话是**轻量视图**：显示文本消息、2.5 秒轮询状态，不渲染工具调用卡片 / 图片 / 折叠块；要看完整轨迹点「在会话页打开」。

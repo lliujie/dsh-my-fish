@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验语法
+        run: |
+          node --check index.js
+          node --check client.js
+          node -e "JSON.parse(require('fs').readFileSync('version.json','utf8'));JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+
+      - name: 组装 package/ 并打 tgz
+        run: |
+          version=$(node -p "require('./version.json').version")
+          mkdir -p stage/package
+          cp index.js client.js package.json version.json cordis.patch.yml icon.svg README.md stage/package/
+          cp -r locale docs stage/package/
+          tar -czf "dafeiyu-${version}.tgz" -C stage package
+          sha256sum "dafeiyu-${version}.tgz" | tee SHA256SUMS.txt
+          ls -l "dafeiyu-${version}.tgz"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dafeiyu-tgz
+          path: |
+            dafeiyu-*.tgz
+            SHA256SUMS.txt
+
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dafeiyu-*.tgz
+            SHA256SUMS.txt
+          generate_release_notes: true

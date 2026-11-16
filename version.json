@@ -1,13 +1,22 @@
 {
   "name": "@local/dafeiyu",
   "display": "大肥鱼",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "releasedAt": "2026-11-16",
   "repository": {
     "type": "git",
     "url": ""
   },
   "changelog": [
+    {
+      "version": "2.1.2",
+      "at": "2026-11-16",
+      "title": "加站点失败不再清空输入；仓库补上开源所需文件",
+      "changes": [
+        "站点：保存失败时保留你刚填的地址和名称（以前不管成败都会清空），失败原因照旧用红色提示",
+        "仓库：新增 LICENSE（MIT）、.gitattributes、scripts/build-tgz.ps1 打包脚本、GitHub Actions（打 tag 自动出 tgz 并发 Release）"
+      ]
+    },
     {
       "version": "2.1.1",
       "at": "2026-11-16",

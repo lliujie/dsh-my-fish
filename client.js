@@ -1670,8 +1670,10 @@ window.__ModuleLoader__.load({
           props.onSaved(value.groups || [], value.sites || []);
           setEditing(null);
           say('站点台账已保存');
+          return true;
         } catch (error) {
           say('保存失败：' + msg(error), 'error');
+          return false;
         } finally {
           setBusy(false);
         }
@@ -1703,8 +1705,7 @@ window.__ModuleLoader__.load({
           note: '',
           check: true
         };
-        await save(sites.concat([item]), groups);
-        return true;
+        return save(sites.concat([item]), groups);
       };
 
       const quickAdd = async () => {
