@@ -1,9 +1,9 @@
 {
   "name": "@local/dafeiyu",
-  "version": "2.5.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "大肥鱼：模块化的本地工作台。项目（文件树 / 就地编辑 / 文档内嵌预览 / 场景布局 / 面板内和主智能体对话）+ 版本中心（变更日志、快照与一键回滚）。",
+  "description": "大肥鱼 3.0：场景化工作台。一个场景 = 一套网格面板 + 一条常驻 AI 会话 + 定位卡与场景记忆；面板类型有 AI / 文件 / 预览 / 网页 / 记忆 / 预留。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

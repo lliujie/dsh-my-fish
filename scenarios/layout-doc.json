@@ -1,14 +1,14 @@
 {
-  "id": "layout_doc",
-  "name": "文档 + 文件 + 保留位 + AI",
-  "description": "左侧宽文档阅读区、右上文件、下方工具位、右下 AI。复盘 / 周报 / 长文阅读最舒服。",
-  "layout": "grid",
-  "theme": "dark",
+  "id": "layout-doc",
+  "name": "文档 + 文件 + 记忆 + AI",
+  "description": "左侧宽文档区、右上文件、左下场景记忆、右下 AI。复盘 / 周报 / 长文阅读最舒服。",
+  "root": "",
+  "cols": 4,
   "panels": [
     {
       "id": "dc-doc",
       "title": "文档",
-      "sub": "点文件里的 md / pdf 即在此阅读",
+      "sub": "点左边文件里的 md / pdf 即在此阅读",
       "type": "view",
       "col": 1,
       "row": 1,
@@ -25,10 +25,11 @@
       "h": 3
     },
     {
-      "id": "dc-extra",
-      "title": "工具位",
-      "sub": "换成网页 / 清单 / 图表",
-      "type": "reserved",
+      "id": "dc-note",
+      "title": "场景记忆",
+      "sub": "§〇 交接 + 长期决策",
+      "type": "note",
+      "source": "memory",
       "col": 1,
       "row": 4,
       "w": 2,
@@ -37,7 +38,7 @@
     {
       "id": "dc-ai",
       "title": "AI",
-      "sub": "右上角选一个你自己的会话",
+      "sub": "这块绑定这个场景的常驻会话",
       "type": "harness",
       "col": 3,
       "row": 4,

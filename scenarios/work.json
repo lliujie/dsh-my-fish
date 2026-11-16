@@ -1,0 +1,36 @@
+{
+  "id": "work",
+  "name": "干活（文件 + AI）",
+  "description": "左边文件树、右边常驻 AI，中间留给预览。改代码 / 整理资料最顺手。",
+  "root": "",
+  "cols": 3,
+  "panels": [
+    {
+      "id": "w-file",
+      "title": "文件",
+      "type": "file",
+      "col": 1,
+      "row": 1,
+      "w": 1,
+      "h": 3
+    },
+    {
+      "id": "w-view",
+      "title": "预览 / 编辑",
+      "type": "view",
+      "col": 2,
+      "row": 1,
+      "w": 1,
+      "h": 3
+    },
+    {
+      "id": "w-ai",
+      "title": "AI",
+      "type": "harness",
+      "col": 3,
+      "row": 1,
+      "w": 1,
+      "h": 3
+    }
+  ]
+}

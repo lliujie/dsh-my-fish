@@ -1,171 +1,73 @@
 /**
- * 大肥鱼 · Client 半边
+ * 大肥鱼 3.0 · 场景化工作台（Web 客户端）
  *
- * 纯 JS + React.createElement（动态客户端没有 JSX 变换）。
- * 结构：左侧模块导航（项目 / 版本）→ 右侧对应模块面板。
+ * 顶部场景标签栏 + 网格面板：harness（常驻 AI）/ file（文件树）/ view（预览编辑）
+ * / web（内嵌网页）/ note（定位卡·场景记忆）/ reserved（预留位）。
+ * 所有能力都由 Host 的 /dafeiyu/api 提供，这里只负责渲染与交互。
  */
 window.__ModuleLoader__.load({
   id: '@local/dafeiyu',
   factory(require) {
     const React = require('react');
-    const h = React.createElement;
     const { useState, useEffect, useCallback, useRef } = React;
+    const h = React.createElement;
 
-    const PANEL_ID = 'dafeiyu';
     const API = '/dafeiyu/api';
+    const PANEL_ID = 'dafeiyu';
 
-    /* ------------------------------------------------------------ 基础工具 */
+    /* ------------------------------------------------------------------ 基础 */
 
-    function cx() {
-      const parts = [];
-      for (let i = 0; i < arguments.length; i += 1) {
-        const value = arguments[i];
-        if (value) parts.push(String(value));
-      }
-      return parts.join(' ');
+    function cx(...args) {
+      return args.filter(Boolean).join(' ');
     }
 
     function msg(error) {
-      if (!error) return '未知错误';
-      return String(error.message || error);
-    }
-
-    function fmtSize(bytes) {
-      const n = Number(bytes) || 0;
-      if (n < 1024) return n + ' B';
-      if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
-      return (n / 1024 / 1024).toFixed(1) + ' MB';
+      if (!error) return '出错了';
+      if (typeof error === 'string') return error;
+      return String(error.message || error.code || error);
     }
 
     function fmtTime(ms) {
-      const value = Number(ms) || 0;
-      if (!value) return '';
-      const d = new Date(value);
-      const pad = (x) => String(x).padStart(2, '0');
-      return (
-        d.getFullYear() +
-        '-' + pad(d.getMonth() + 1) +
-        '-' + pad(d.getDate()) +
-        ' ' + pad(d.getHours()) +
-        ':' + pad(d.getMinutes())
-      );
+      if (!ms) return '';
+      const date = new Date(Number(ms));
+      if (Number.isNaN(date.getTime())) return '';
+      const today = new Date();
+      const sameDay = date.toDateString() === today.toDateString();
+      return sameDay
+        ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+        : `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
     }
 
-    function parentOf(rel) {
-      const index = String(rel || '').lastIndexOf('/');
-      return index < 0 ? '' : rel.slice(0, index);
-    }
-
-    function slugify(text) {
-      const base = String(text || '')
-        .trim()
-        .toLowerCase()
-        .replace(/[\\/:*?"<>|\s]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-      return base || 'module';
-    }
-
-    function svc(get, name) {
-      try {
-        return get(name) || null;
-      } catch {
-        return null;
+    async function call(pathname, options) {
+      const init = options ? { ...options } : {};
+      init.headers = { ...(init.headers || {}) };
+      if (init.body && typeof init.body !== 'string') {
+        init.headers['content-type'] = 'application/json';
+        init.body = JSON.stringify(init.body);
       }
-    }
-
-    function normPath(value) {
-      return String(value || '')
-        .replace(/[\\/]+/g, '\\')
-        .replace(/\\+$/, '')
-        .toLowerCase();
-    }
-
-    /* 按根目录找一个已有工作区，避免重复创建 */
-    function findWorkspace(get, root) {
+      const response = await fetch(API + pathname, init);
+      let payload = null;
       try {
-        const workspaces = svc(get, 'workspaces');
-        if (!workspaces || !workspaces.list || typeof workspaces.list.getSnapshot !== 'function') return null;
-        const items = workspaces.list.getSnapshot().items || [];
-        const want = normPath(root);
-        for (const item of items) {
-          const path = item.path || (item.workspace && item.workspace.path);
-          if (normPath(path) !== want) continue;
-          return item.workspaceId || (item.workspace && item.workspace.workspaceId) || null;
-        }
-        return null;
+        payload = await response.json();
       } catch {
-        return null;
+        payload = null;
       }
-    }
-
-    async function decodeJson(res) {
-      let body = null;
-      try {
-        body = await res.json();
-      } catch {
-        body = null;
-      }
-      if (!body) {
-        const error = new Error('接口没有返回内容（HTTP ' + res.status + '）');
-        error.code = 'HTTP_' + res.status;
+      if (!response.ok || (payload && payload.ok === false)) {
+        const detail = payload && payload.error ? payload.error : null;
+        const error = new Error((detail && detail.message) || `请求失败（HTTP ${response.status}）`);
+        error.code = detail && detail.code;
+        error.status = response.status;
         throw error;
       }
-      if (!body.ok) {
-        const error = new Error((body.error && body.error.message) || '请求失败（HTTP ' + res.status + '）');
-        error.code = body.error && body.error.code ? body.error.code : 'HTTP_' + res.status;
-        throw error;
-      }
-      return body.value;
+      return payload ? payload.value : null;
     }
 
-    async function call(route, params) {
-      const search = params ? '?' + new URLSearchParams(params).toString() : '';
-      const res = await fetch(API + route + search, {
-        headers: { accept: 'application/json' },
-        credentials: 'same-origin'
-      });
-      return decodeJson(res);
-    }
+    const get = (pathname) => call(pathname);
+    const post = (pathname, body) => call(pathname, { method: 'POST', body: body || {} });
 
-    async function post(route, payload) {
-      const res = await fetch(API + route, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(payload || {})
-      });
-      return decodeJson(res);
-    }
-
-    async function copyText(text) {
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(text);
-          return true;
-        }
-      } catch {
-        /* 落到 execCommand */
-      }
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', 'readonly');
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        return ok;
-      } catch {
-        return false;
-      }
-    }
-
-    /* 本地界面偏好：布局开关、自动保存等，存在浏览器里 */
     function readPref(key, fallback) {
       try {
-        const raw = localStorage.getItem(key);
+        const raw = window.localStorage.getItem(key);
         if (raw === null) return fallback;
         if (raw === 'on') return true;
         if (raw === 'off') return false;
@@ -177,2633 +79,1455 @@ window.__ModuleLoader__.load({
 
     function writePref(key, value) {
       try {
-        localStorage.setItem(key, typeof value === 'boolean' ? (value ? 'on' : 'off') : JSON.stringify(value));
+        window.localStorage.setItem(key, typeof value === 'boolean' ? (value ? 'on' : 'off') : JSON.stringify(value));
       } catch {
-        /* 隐私模式等场景忽略 */
+        /* 忽略 */
       }
     }
 
-    const BADGE = {
-      docx: 'DOC', doc: 'DOC', md: 'MD', markdown: 'MD', txt: 'TXT', rtf: 'RTF',
-      xlsx: 'XLS', xls: 'XLS', xlsm: 'XLS', csv: 'CSV', tsv: 'CSV',
-      pptx: 'PPT', ppt: 'PPT', key: 'KEY',
-      pdf: 'PDF', png: 'IMG', jpg: 'IMG', jpeg: 'IMG', gif: 'IMG', webp: 'IMG', bmp: 'IMG', svg: 'SVG',
-      json: 'JSON', yml: 'YML', yaml: 'YML', toml: 'TOML', xml: 'XML', html: 'HTML', css: 'CSS',
-      js: 'JS', mjs: 'JS', ts: 'TS', tsx: 'TSX', jsx: 'JSX', py: 'PY', java: 'JAVA', cs: 'CS',
-      sql: 'SQL', sh: 'SH', ps1: 'PS1', bat: 'BAT', zip: 'ZIP', rar: 'RAR', '7z': '7Z'
-    };
-
-    const TONE = {
-      doc: 't-doc', md: 't-doc', txt: 't-doc',
-      xlsx: 't-xls', xls: 't-xls', xlsm: 't-xls', csv: 't-xls', tsv: 't-xls',
-      pptx: 't-ppt', ppt: 't-ppt', key: 't-ppt',
-      pdf: 't-pdf', png: 't-img', jpg: 't-img', jpeg: 't-img', gif: 't-img', webp: 't-img', svg: 't-img'
-    };
-
-    function badgeOf(entry) {
-      if (entry.dir) return { text: 'DIR', tone: 't-dir' };
-      const ext = String(entry.name || '').split('.').pop().toLowerCase();
-      const text = BADGE[ext] || (ext ? ext.slice(0, 4).toUpperCase() : 'FILE');
-      return { text, tone: TONE[ext] || 't-other' };
+    function kindLabel(kind) {
+      return { text: '文档', image: '图片', pdf: 'PDF', office: 'Office', dir: '文件夹', unknown: '文件' }[kind] || '文件';
     }
 
-    /* ------------------------------------------------------------ 组件 */
-
-    function PanelIcon(props) {
-      const size = props && Number(props.size) > 0 ? Number(props.size) : 20;
-      return h(
-        'span',
-        { className: 'pm-icon' },
-        h(
-          'svg',
-          {
-            viewBox: '0 0 24 24',
-            width: size,
-            height: size,
-            fill: 'none',
-            stroke: 'currentColor',
-            strokeWidth: 1.6,
-            strokeLinecap: 'round',
-            strokeLinejoin: 'round'
-          },
-          h('ellipse', { cx: 13.6, cy: 12, rx: 7.2, ry: 4.8 }),
-          h('path', { d: 'M6.4 12 2.4 9v6l4-3Z' }),
-          h('path', { d: 'M12.6 8c.9 1.3.9 2.7 0 4' }),
-          h('circle', { cx: 17.4, cy: 10.4, r: 0.9, fill: 'currentColor', stroke: 'none' })
-        )
-      );
+    function fmtSize(bytes) {
+      const size = Number(bytes) || 0;
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
     }
 
-    function Spinner() {
-      return h('span', { className: 'pm-spinner' });
-    }
-
-    function Toast(props) {
-      if (!props.toast) return null;
-      return h(
-        'div',
-        {
-          className: cx('pm-toast', props.toast.tone === 'error' ? 'is-error' : 'is-ok'),
-          onClick: props.onClose,
-          role: 'status'
-        },
-        props.toast.text
-      );
-    }
-
-    /* ------------------------------ Markdown 预览 */
-
-    function inlineNodes(text, keyPrefix) {
-      const out = [];
-      const source = String(text || '');
-      const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    function renderInline(text, keyPrefix) {
+      const nodes = [];
+      const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
       let last = 0;
       let match = null;
       let index = 0;
-      while ((match = pattern.exec(source)) !== null) {
-        if (match.index > last) out.push(source.slice(last, match.index));
+      while ((match = pattern.exec(text))) {
+        if (match.index > last) nodes.push(text.slice(last, match.index));
         const token = match[0];
-        if (token.startsWith('**')) {
-          out.push(h('strong', { key: keyPrefix + '-b' + index }, token.slice(2, -2)));
-        } else {
-          out.push(h('code', { key: keyPrefix + '-c' + index, className: 'pm-code' }, token.slice(1, -1)));
+        if (token.startsWith('`')) nodes.push(h('code', { key: `${keyPrefix}-c${index}` }, token.slice(1, -1)));
+        else if (token.startsWith('**')) nodes.push(h('strong', { key: `${keyPrefix}-b${index}` }, token.slice(2, -2)));
+        else {
+          const link = /\[([^\]]+)\]\(([^)]+)\)/.exec(token);
+          nodes.push(h('a', { key: `${keyPrefix}-a${index}`, href: link[2], target: '_blank', rel: 'noreferrer' }, link[1]));
         }
         last = match.index + token.length;
         index += 1;
       }
-      if (last < source.length) out.push(source.slice(last));
-      return out;
+      if (last < text.length) nodes.push(text.slice(last));
+      return nodes;
     }
 
-    function renderMarkdown(text) {
-      const lines = String(text || '').split(/\r?\n/);
-      const out = [];
+    /** 极简 Markdown（标题 / 列表 / 引用 / 代码块 / 表格不处理） */
+    function renderMarkdown(source) {
+      const lines = String(source || '').split(/\r?\n/);
+      const blocks = [];
       let i = 0;
-      let key = 0;
       while (i < lines.length) {
         const line = lines[i];
-        if (/^\s*```/.test(line)) {
-          const fence = line.replace(/^\s*```/, '');
-          const body = [];
+        if (/^```/.test(line)) {
+          const code = [];
           i += 1;
-          while (i < lines.length && !/^\s*```/.test(lines[i])) {
-            body.push(lines[i]);
+          while (i < lines.length && !/^```/.test(lines[i])) {
+            code.push(lines[i]);
             i += 1;
           }
           i += 1;
-          out.push(
-            h('pre', { key: 'k' + key, className: 'pm-pre' },
-              h('code', { 'data-lang': fence || '' }, body.join('\n')))
-          );
-          key += 1;
+          blocks.push(h('pre', { key: `pre${blocks.length}`, className: 'pm-md-pre' }, h('code', null, code.join('\n'))));
           continue;
         }
-        const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+        const heading = /^(#{1,4})\s+(.*)$/.exec(line);
         if (heading) {
-          const level = heading[1].length;
-          out.push(h('h' + level, { key: 'k' + key, className: 'pm-md-h' }, inlineNodes(heading[2], 'h' + key)));
-          key += 1;
+          const level = Math.min(6, heading[1].length + 1);
+          blocks.push(h(`h${level}`, { key: `h${blocks.length}` }, renderInline(heading[2], `h${blocks.length}`)));
           i += 1;
           continue;
         }
-        if (/^\s*>\s?/.test(line)) {
-          const body = [];
-          while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-            body.push(lines[i].replace(/^\s*>\s?/, ''));
-            i += 1;
-          }
-          out.push(h('blockquote', { key: 'k' + key, className: 'pm-quote' }, inlineNodes(body.join(' '), 'q' + key)));
-          key += 1;
-          continue;
-        }
-        if (/^\s*[-*+]\s+/.test(line)) {
+        if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
           const items = [];
-          while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-            items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+          while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+            items.push(h('li', { key: `li${i}` }, renderInline(lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, ''), `li${i}`)));
             i += 1;
           }
-          out.push(
-            h('ul', { key: 'k' + key, className: 'pm-md-list' },
-              items.map((item, index) => h('li', { key: 'li' + index }, inlineNodes(item, 'i' + key + index))))
-          );
-          key += 1;
+          blocks.push(h('ul', { key: `ul${blocks.length}`, className: 'pm-md-ul' }, items));
           continue;
         }
-        if (/^\s*\d+[.)]\s+/.test(line)) {
-          const items = [];
-          while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
-            items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
+        if (/^>\s?/.test(line)) {
+          const quote = [];
+          while (i < lines.length && /^>\s?/.test(lines[i])) {
+            quote.push(lines[i].replace(/^>\s?/, ''));
             i += 1;
           }
-          out.push(
-            h('ol', { key: 'k' + key, className: 'pm-md-list' },
-              items.map((item, index) => h('li', { key: 'li' + index }, inlineNodes(item, 'o' + key + index))))
-          );
-          key += 1;
-          continue;
-        }
-        if (/^\s*\|.*\|\s*$/.test(line)) {
-          const rows = [];
-          while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
-            rows.push(lines[i].trim());
-            i += 1;
-          }
-          const cellsOf = (row) => row.replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
-          const head = cellsOf(rows[0]);
-          const bodyRows = rows.slice(1).filter((row) => !/^\|[\s:|-]+\|$/.test(row));
-          out.push(
-            h('table', { key: 'k' + key, className: 'pm-table' },
-              h('thead', null, h('tr', null, head.map((cell, index) => h('th', { key: 'th' + index }, inlineNodes(cell, 'th' + index))))),
-              h('tbody', null, bodyRows.map((row, rowIndex) =>
-                h('tr', { key: 'tr' + rowIndex }, cellsOf(row).map((cell, index) =>
-                  h('td', { key: 'td' + index }, inlineNodes(cell, 'td' + rowIndex + index))))))
-            )
-          );
-          key += 1;
+          blocks.push(h('blockquote', { key: `q${blocks.length}`, className: 'pm-md-quote' }, renderInline(quote.join(' '), `q${blocks.length}`)));
           continue;
         }
         if (!line.trim()) {
           i += 1;
           continue;
         }
-        const body = [];
-        while (i < lines.length && lines[i].trim() && !/^(\s*```|\s*#{1,6}\s|\s*[-*+]\s|\s*\d+[.)]\s|\s*>|\s*\|)/.test(lines[i])) {
-          body.push(lines[i]);
+        const para = [];
+        while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|>|\s*([-*+]|\d+\.)\s)/.test(lines[i])) {
+          para.push(lines[i]);
           i += 1;
         }
-        if (!body.length) body.push(lines[i] ? lines[i] : '');
-        if (!body.length) {
-          i += 1;
-          continue;
-        }
-        out.push(h('p', { key: 'k' + key, className: 'pm-md-p' }, inlineNodes(body.join(' '), 'p' + key)));
-        key += 1;
+        blocks.push(h('p', { key: `p${blocks.length}`, className: 'pm-md-p' }, renderInline(para.join(' '), `p${blocks.length}`)));
       }
-      return out;
+      return h('div', { className: 'pm-md' }, blocks);
     }
 
-    /* ------------------------------ 面板内对话 */
+    /* ------------------------------------------------------------ 小部件 */
 
-    function ChatPane(props) {
-      const isOverview = props.target === 'overview';
-      const projectId = props.projectId || '';
-      const query = isOverview ? 'target=overview' : 'projectId=' + encodeURIComponent(projectId);
-      const payloadBase = isOverview ? { target: 'overview' } : { projectId };
-      const [chat, setChat] = useState({ loading: true, sessionId: '', items: [], status: null, error: '' });
-      const [draft, setDraft] = useState('');
-      const [sending, setSending] = useState(false);
-      const [busy, setBusy] = useState(false);
-      const [composer, setComposer] = useState({ models: [], selection: null, permission: null, commands: [] });
+    function Spinner(props) {
+      return h('span', { className: cx('pm-spinner', props && props.large && 'is-large'), 'aria-label': '加载中' });
+    }
+
+    function Empty(props) {
+      return h('div', { className: 'pm-empty' },
+        h('div', { className: 'pm-empty-title' }, props.title || '还没有内容'),
+        props.hint ? h('div', { className: 'pm-empty-hint' }, props.hint) : null,
+        props.children || null);
+    }
+
+    function Toast(props) {
+      if (!props.toast) return null;
+      return h('div', { className: cx('pm-toast', `is-${props.toast.kind || 'ok'}`) }, props.toast.text);
+    }
+
+    /* --------------------------------------------------------- AI 面板里的小件 */
+
+    function MentionList(props) {
+      const items = props.items || [];
+      if (!items.length) return null;
+      return h('div', { className: 'pm-picker' },
+        h('div', { className: 'pm-picker-title' }, '引用文件'),
+        h('div', { className: 'pm-picker-list' }, items.map((item, index) => h('button', {
+          key: item.path,
+          type: 'button',
+          className: cx('pm-picker-item', index === props.index && 'is-active'),
+          onMouseEnter: () => props.onHover(index),
+          onClick: () => props.onPick(item)
+        },
+          h('span', { className: 'pm-picker-name' }, item.path.split('/').pop()),
+          h('span', { className: 'pm-picker-path' }, item.path)))));
+    }
+
+    function ChatFeed(props) {
+      const feedRef = useRef(null);
+      useEffect(() => {
+        if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+      }, [props.items.length, props.running]);
+      if (!props.items.length) {
+        return h('div', { className: 'pm-chat-empty' },
+          props.bound ? '还没有消息，下面输入框说一句就开始' : '还没绑定会话：右上角选一个，或点「新建会话」');
+      }
+      return h('div', { className: 'pm-chat-feed', ref: feedRef },
+        props.items.map((item, index) => h('div', { key: index, className: cx('pm-bubble', `is-${item.role}`) },
+          h('div', { className: 'pm-bubble-role' }, item.role === 'user' ? '我' : 'AI', h('span', { className: 'pm-bubble-time' }, fmtTime(item.time))),
+          h('div', { className: 'pm-bubble-body' }, renderMarkdown(item.text)))),
+        props.running ? h('div', { className: 'pm-chat-running' }, h(Spinner, null), 'AI 正在回…') : null);
+    }
+
+    /* -------------------------------------------------------------- 会话主件 */
+
+    function HarnessPanel(props) {
+      const { scene, panel, say, sessionState } = props;
+      const [items, setItems] = useState([]);
+      const [running, setRunning] = useState(false);
+      const [bound, setBound] = useState(Boolean(sessionState && sessionState.sessionId));
+      const [sessions, setSessions] = useState([]);
       const [picker, setPicker] = useState('');
       const [pickIndex, setPickIndex] = useState(0);
-      const [mentions, setMentions] = useState({ items: [], loading: false });
+      const [mentions, setMentions] = useState([]);
+      const [composer, setComposer] = useState(null);
       const [notices, setNotices] = useState([]);
-      const boxRef = useRef(null);
+      const [draft, setDraft] = useState('');
+      const [busy, setBusy] = useState('');
       const inputRef = useRef(null);
-      const say = props.say || (() => {});
 
-      const load = useCallback(async (silent) => {
-        if (!silent) setChat((prev) => ({ ...prev, loading: true }));
+      const sessionId = (sessionState && sessionState.sessionId) || '';
+
+      const loadMessages = useCallback(async () => {
         try {
-          const value = await call('/chat/messages?' + query + '&limit=80');
-          setChat({
-            loading: false,
-            sessionId: value.sessionId || '',
-            items: value.items || [],
-            status: value.status || null,
-            error: ''
-          });
+          const value = await get(`/chat/messages?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}`);
+          setItems(value && Array.isArray(value.items) ? value.items : []);
+          setBound(Boolean(value && value.bound));
         } catch (error) {
-          setChat((prev) => ({ ...prev, loading: false, error: msg(error) }));
+          say(msg(error), 'error');
         }
-      }, [query]);
+      }, [scene.id, panel.id, say]);
 
       const loadComposer = useCallback(async () => {
         try {
-          const value = await call('/composer?' + query);
-          setComposer({
-            models: value.models || [],
-            selection: value.selection || null,
-            permission: value.permission || null,
-            commands: value.commands || []
-          });
-        } catch (error) {
-          /* 输入框增强是锦上添花，失败就保持基础输入 */
+          const value = await get(`/composer?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}`);
+          setComposer(value || null);
+          setBound(Boolean(value && value.bound));
+        } catch {
+          setComposer(null);
         }
-      }, [query]);
+      }, [scene.id, panel.id]);
+
+      const loadSessions = useCallback(async () => {
+        try {
+          const value = await get('/sessions');
+          setSessions(value && Array.isArray(value.items) ? value.items : []);
+        } catch {
+          setSessions([]);
+        }
+      }, []);
 
       useEffect(() => {
-        load(false);
-        loadComposer();
-      }, [load, loadComposer]);
+        void loadMessages();
+        void loadComposer();
+        void loadSessions();
+      }, [loadMessages, loadComposer, loadSessions]);
 
       useEffect(() => {
-        const timer = setInterval(() => load(true), 2500);
-        return () => clearInterval(timer);
-      }, [load]);
-
-      useEffect(() => {
-        const node = boxRef.current;
-        if (node) node.scrollTop = node.scrollHeight;
-      }, [chat.items.length, chat.loading, notices.length]);
-
-      const mentionWord = (() => {
-        const match = /(^|\s)@([^\s@]*)$/.exec(draft);
-        return match ? match[2] : '';
-      })();
-
-      useEffect(() => {
-        if (picker !== 'file' || isOverview) return undefined;
-        let stopped = false;
-        const timer = setTimeout(async () => {
-          setMentions((prev) => ({ ...prev, loading: true }));
+        let alive = true;
+        const timer = setInterval(async () => {
+          if (!alive) return;
           try {
-            const value = await call('/mentions?projectId=' + encodeURIComponent(projectId)
-              + '&q=' + encodeURIComponent(mentionWord));
-            if (!stopped) setMentions({ items: value.items || [], loading: false });
-          } catch (error) {
-            if (!stopped) setMentions({ items: [], loading: false });
+            const value = await get(`/chat/messages?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}`);
+            if (!alive) return;
+            setItems(value && Array.isArray(value.items) ? value.items : []);
+            setRunning(Boolean(value && value.running));
+          } catch {
+            /* 轮询失败不打扰 */
+          }
+        }, 2500);
+        return () => {
+          alive = false;
+          clearInterval(timer);
+        };
+      }, [scene.id, panel.id]);
+
+      useEffect(() => {
+        const word = /(^|\s)@([^\s@]*)$/.exec(draft);
+        if (!word) {
+          setMentions([]);
+          if (picker === 'file') setPicker('');
+          return undefined;
+        }
+        let alive = true;
+        const timer = setTimeout(async () => {
+          try {
+            const value = await get(`/mentions?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}&q=${encodeURIComponent(word[2])}`);
+            if (!alive) return;
+            setMentions(value && Array.isArray(value.items) ? value.items : []);
+            setPicker('file');
+            setPickIndex(0);
+          } catch {
+            if (alive) setMentions([]);
           }
         }, 160);
         return () => {
-          stopped = true;
+          alive = false;
           clearTimeout(timer);
         };
-      }, [picker, mentionWord, projectId, isOverview]);
-
-      const startSession = async () => {
-        setBusy(true);
-        try {
-          const value = await post('/chat/new', payloadBase);
-          await load(true);
-          if (typeof props.onSession === 'function') props.onSession(value.sessionId);
-          return value.sessionId;
-        } catch (error) {
-          say('新建会话失败：' + msg(error), 'error');
-          return '';
-        } finally {
-          setBusy(false);
-        }
-      };
+      }, [draft, scene.id, panel.id, picker]);
 
       const insertMention = (path) => {
-        setDraft((prev) => {
-          const match = /(^|\s)@([^\s@]*)$/.exec(prev);
-          const token = '@' + path + ' ';
-          if (match) return prev.slice(0, match.index + match[1].length) + token;
-          return prev + (prev && !/\s$/.test(prev) ? ' ' : '') + token;
-        });
+        setDraft((prev) => `${prev.replace(/(^|\s)@([^\s@]*)$/, `$1@${path} `)}`);
         setPicker('');
-        setPickIndex(0);
-        const node = inputRef.current;
-        if (node) node.focus();
+        setMentions([]);
+        if (inputRef.current) inputRef.current.focus();
       };
 
       const insertCommand = (name) => {
-        setDraft('/' + name + ' ');
+        setDraft(`/${name} `);
         setPicker('');
-        setPickIndex(0);
-        const node = inputRef.current;
-        if (node) node.focus();
+        if (inputRef.current) inputRef.current.focus();
       };
 
-      const send = async () => {
-        const text = String(draft || '').trim();
-        if (!text || sending) return;
-        setSending(true);
+      const bindSession = async (nextId) => {
+        if (!nextId) return;
+        setBusy('bind');
         try {
-          if (!chat.sessionId) {
-            const created = await startSession();
-            if (!created) return;
-          }
-          if (text.startsWith('/')) {
-            const value = await post('/command', { ...payloadBase, line: text });
-            const feedback = String(value.text || '').trim();
-            setNotices((prev) => prev.concat([{
-              key: 'c' + Date.now(),
-              text: feedback || ('已执行 ' + text)
-            }]).slice(-4));
-            setDraft('');
-            await loadComposer();
-            await load(true);
-          } else {
-            await post('/chat/send', { ...payloadBase, text });
-            setDraft('');
-            await load(true);
-          }
+          await post('/session/bind', { sceneId: scene.id, panelId: panel.id, sessionId: nextId });
+          say('已绑定会话', 'ok');
+          setPicker('');
+          await loadMessages();
+          await loadComposer();
         } catch (error) {
-          say('发送失败：' + msg(error), 'error');
+          say(msg(error), 'error');
         } finally {
-          setSending(false);
+          setBusy('');
         }
       };
 
-      const bound = Boolean(chat.sessionId);
+      const newSession = async () => {
+        setBusy('new');
+        try {
+          const value = await post('/session/new', { sceneId: scene.id, panelId: panel.id });
+          say('已新建会话', 'ok');
+          setPicker('');
+          await loadMessages();
+          await loadComposer();
+          await loadSessions();
+          return value;
+        } catch (error) {
+          say(msg(error), 'error');
+          return null;
+        } finally {
+          setBusy('');
+        }
+      };
+
+      const claim = async () => {
+        setBusy('claim');
+        try {
+          await post('/claim', { sceneId: scene.id, panelId: panel.id });
+          say('已把「认领身份」的指令发给会话', 'ok');
+        } catch (error) {
+          say(msg(error), 'error');
+        } finally {
+          setBusy('');
+        }
+      };
+
+      const pushNotice = (text) => {
+        setNotices((prev) => [{ text, time: Date.now() }, ...prev].slice(0, 4));
+      };
+
+      const send = async () => {
+        const text = draft.trim();
+        if (!text) return;
+        if (!bound) {
+          say('先绑一个会话（右上角选一个，或点「新建会话」）', 'error');
+          return;
+        }
+        const base = { sceneId: scene.id, panelId: panel.id };
+        try {
+          if (text.startsWith('/')) {
+            const value = await post('/command', { ...base, line: text });
+            pushNotice(`/${text.slice(1)} → ${value.kind || 'ok'}${value.text ? '：' + value.text : ''}`);
+            setDraft('');
+            await loadComposer();
+          } else {
+            await post('/chat/send', { ...base, text });
+            setDraft('');
+            await loadMessages();
+          }
+        } catch (error) {
+          say(msg(error), 'error');
+        }
+      };
 
       const pickModel = async (model) => {
-        setPicker('');
         if (!bound) {
           say('先发一句话建好会话，再换模型', 'error');
           return;
         }
         try {
-          const value = await post('/composer/model', {
-            ...payloadBase,
-            provider: model.provider,
-            model: model.model,
-            reasoningEffort: model.defaultEffort
-          });
-          setComposer((prev) => ({ ...prev, selection: value.selection || prev.selection }));
-          say('已切到 ' + model.modelName, 'ok');
+          await post('/composer/model', { sceneId: scene.id, panelId: panel.id, provider: model.provider, model: model.model, reasoningEffort: model.reasoningEffort });
+          say(`已切到 ${model.modelName}`, 'ok');
+          setPicker('');
+          await loadComposer();
         } catch (error) {
-          say('换模型失败：' + msg(error), 'error');
+          say(msg(error), 'error');
         }
       };
 
       const cycleEffort = async () => {
-        const selection = composer.selection || null;
-        if (!bound || !selection) return;
-        const model = (composer.models || []).find((item) => item.model === selection.model) || null;
-        if (!model || !model.efforts.length) return;
-        const list = model.efforts.map((item) => item.id);
-        const current = list.indexOf(selection.reasoningEffort);
-        const wanted = list[(current + 1) % list.length];
-        try {
-          const value = await post('/composer/model', {
-            ...payloadBase,
-            provider: selection.provider,
-            model: selection.model,
-            reasoningEffort: wanted
-          });
-          setComposer((prev) => ({ ...prev, selection: value.selection || prev.selection }));
-        } catch (error) {
-          say('换档位失败：' + msg(error), 'error');
+        const selection = composer && composer.selection;
+        const current = composer && composer.models && composer.models.find((item) => item.model === (selection && selection.model));
+        const efforts = (current && current.efforts) || [];
+        if (!bound || !efforts.length) {
+          say('先发一句话建好会话，再调档位', 'error');
+          return;
         }
+        const now = (selection && selection.reasoningEffort) || '';
+        const index = Math.max(0, efforts.findIndex((item) => item.id === now));
+        const next = efforts[(index + 1) % efforts.length];
+        await pickModel({ provider: selection.provider, model: selection.model, modelName: current.modelName, reasoningEffort: next.id });
       };
 
       const pickPermission = async (preset) => {
-        setPicker('');
         if (!bound) {
           say('先发一句话建好会话，再改权限', 'error');
           return;
         }
         try {
-          await post('/composer/permission', { ...payloadBase, preset: preset.id });
-          setComposer((prev) => ({
-            ...prev,
-            permission: { ...(prev.permission || {}), preset: preset.id }
-          }));
-          say('权限改成「' + preset.name + '」', 'ok');
+          await post('/composer/permission', { sceneId: scene.id, panelId: panel.id, preset });
+          say('权限已切换', 'ok');
+          setPicker('');
+          await loadComposer();
         } catch (error) {
-          say('改权限失败：' + msg(error), 'error');
+          say(msg(error), 'error');
         }
       };
 
       const runPicker = () => {
-        if (picker === 'file' && mentions.items[pickIndex]) {
-          insertMention(mentions.items[pickIndex].path);
-          return true;
+        if (picker === 'file') {
+          const item = mentions[pickIndex];
+          if (item) insertMention(item.path);
+          return;
         }
         if (picker === 'command') {
-          const list = commandSuggestions;
-          if (list[pickIndex]) {
-            insertCommand(list[pickIndex].name);
-            return true;
-          }
+          const item = (composer && composer.commands ? composer.commands : [])[pickIndex];
+          if (item) insertCommand(item.name);
+          return;
         }
-        return false;
+        if (picker === 'model') {
+          const item = (composer && composer.models ? composer.models : [])[pickIndex];
+          if (item) void pickModel(item);
+          return;
+        }
+        if (picker === 'permission') {
+          const item = (composer && composer.permission ? composer.permission.presets : [])[pickIndex];
+          if (item) void pickPermission(item.id);
+        }
       };
 
-      const running = Boolean(chat.status && chat.status.running);
-      const items = chat.items || [];
-      const agentName = isOverview ? '总览智能体' : '主智能体';
-      const commands = composer.commands || [];
-      const commandQuery = String(draft || '').startsWith('/') && !String(draft || '').includes('\n')
-        ? String(draft || '').slice(1).toLowerCase()
-        : null;
-      const commandSuggestions = commandQuery === null
-        ? []
-        : commands.filter((item) => !commandQuery || item.name.toLowerCase().includes(commandQuery)).slice(0, 8);
-      const selection = composer.selection || null;
-      const presetId = composer.permission && composer.permission.preset ? composer.permission.preset : '';
-      const presetName = (() => {
-        const list = (composer.permission && composer.permission.presets) || [];
-        const hit = list.find((item) => item.id === presetId);
-        return hit ? hit.name : '权限';
-      })();
-      const modelName = selection
-        ? (() => {
-          const hit = (composer.models || []).find((item) => item.model === selection.model);
-          return (hit && hit.modelName) || selection.model;
-        })()
-        : '模型';
+      const pickerLength = () => {
+        if (picker === 'file') return mentions.length;
+        if (picker === 'command') return (composer && composer.commands ? composer.commands : []).length;
+        if (picker === 'model') return (composer && composer.models ? composer.models : []).length;
+        if (picker === 'permission') return (composer && composer.permission ? composer.permission.presets : []).length;
+        return 0;
+      };
 
-      return h('section', { className: 'pm-chat' },
-        h('div', { className: 'pm-chat-head' },
-          h('span', { className: 'pm-chat-title' }, agentName),
-          h('span', {
-            className: cx('pm-chat-dot', running ? 'is-busy' : (chat.sessionId ? 'is-idle' : 'is-none')),
-            title: running ? '正在处理' : (chat.sessionId ? '空闲' : '未建会话')
-          }),
-          h('span', { className: 'pm-chat-status' },
-            running ? '正在处理…' : (chat.sessionId ? '空闲' : '未建会话')),
-          h('button', {
-            className: 'pm-btn is-ghost pm-icon-btn',
-            onClick: startSession,
-            disabled: busy,
-            title: chat.sessionId ? '新建会话并重新绑定' : '建一个会话'
-          }, busy ? h(Spinner) : null, chat.sessionId ? '新会话' : '开始对话')),
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          setPicker('');
+          return;
+        }
+        if (picker && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          event.preventDefault();
+          const total = pickerLength();
+          if (!total) return;
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          setPickIndex((prev) => (prev + delta + total) % total);
+          return;
+        }
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          if (picker && pickerLength()) runPicker();
+          else void send();
+        }
+      };
 
-        h('div', { className: 'pm-chat-box', ref: boxRef },
-          chat.loading ? h('div', { className: 'pm-chat-hint' }, '载入中…') : null,
-          !chat.loading && chat.error
-            ? h('div', { className: 'pm-chat-hint is-error' }, chat.error)
-            : null,
-          !chat.loading && !chat.error && !items.length
-            ? h('div', { className: 'pm-chat-hint' },
-              isOverview
-                ? '这里直接和总览智能体对话：可以问「本周各项目改了什么」，也能让它把右侧汇总润色成周报。'
-                : '这里直接和主智能体对话，不用跳到会话页：让它读项目档案、按模块派单、汇总产出。')
-            : null,
-          items.map((item, index) => h('div', {
-            key: 'm' + index,
-            className: cx('pm-msg', item.role === 'user' ? 'is-user' : 'is-agent')
+      const onChange = (event) => {
+        const text = event.target.value;
+        setDraft(text);
+        if (text.startsWith('/') && !text.includes('\n') && text.trim().indexOf(' ') < 0) {
+          setPicker('command');
+          setPickIndex(0);
+        } else if (picker === 'command' && !text.startsWith('/')) {
+          setPicker('');
+        }
+      };
+
+      const selection = (composer && composer.selection) || null;
+      const modelName = selection ? ((composer.models.find((item) => item.model === selection.model) || {}).modelName || selection.model) : '模型';
+      const permissionName = (composer && composer.permission && (composer.permission.presets.find((item) => item.id === composer.permission.preset) || {}).name) || '权限';
+
+      return h('section', { className: 'pm-pane pm-pane-harness' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' },
+            h('span', { className: 'pm-pane-dot is-harness' }),
+            h('span', null, panel.title || 'AI'),
+            h('span', { className: 'pm-pane-hint' }, bound ? '已绑会话' : '未绑会话')),
+          h('div', { className: 'pm-pane-actions' },
+            h('button', {
+              type: 'button',
+              className: 'pm-btn is-mini',
+              disabled: busy !== '',
+              onClick: () => { setPicker(picker === 'session' ? '' : 'session'); void loadSessions(); }
+            }, '会话'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !bound || busy !== '', onClick: claim }, '认领身份'))),
+        picker === 'session' ? h('div', { className: 'pm-session-list' },
+          h('div', { className: 'pm-session-head' }, '选一个会话绑到这块面板'),
+          h('button', { type: 'button', className: 'pm-btn is-mini is-primary', disabled: busy !== '', onClick: newSession }, busy === 'new' ? '新建中…' : '＋ 新建会话'),
+          sessions.length ? sessions.map((item) => h('button', {
+            key: item.sessionId,
+            type: 'button',
+            className: cx('pm-session-item', item.sessionId === sessionId && 'is-active'),
+            onClick: () => void bindSession(item.sessionId)
           },
-            h('div', { className: 'pm-msg-role' }, item.role === 'user' ? '我' : agentName),
-            h('div', { className: 'pm-msg-text' }, item.text))),
-          notices.map((notice) => h('div', { key: notice.key, className: 'pm-chat-notice' }, notice.text)),
-          sending ? h('div', { className: 'pm-chat-hint' }, h(Spinner), ' 已发送…') : null),
-
-        h('div', { className: 'pm-chat-composer' },
-          picker === 'file' ? h('div', { className: 'pm-picker' },
-            h('div', { className: 'pm-picker-title' }, '引用项目里的文件'),
-            mentions.loading ? h('div', { className: 'pm-picker-empty' }, '查找中…') : null,
-            !mentions.loading && !mentions.items.length
-              ? h('div', { className: 'pm-picker-empty' }, '没有匹配的文件')
-              : null,
-            mentions.items.map((item, index) => h('button', {
-              key: item.path,
-              className: cx('pm-picker-item', index === pickIndex ? 'is-active' : ''),
-              onMouseEnter: () => setPickIndex(index),
-              onClick: () => insertMention(item.path)
-            }, h('span', { className: 'pm-picker-name' }, item.path.split('/').pop()),
-            h('span', { className: 'pm-picker-path' }, item.path)))) : null,
-
+            h('span', { className: 'pm-session-title' }, item.title || item.sessionId.slice(0, 16)),
+            h('span', { className: 'pm-session-id' }, item.sessionId.slice(0, 12))))
+            : h('div', { className: 'pm-session-empty' }, '没读到会话列表，可以直接点「新建会话」')) : null,
+        h(ChatFeed, { items, running, bound }),
+        notices.length ? h('div', { className: 'pm-notices' }, notices.map((item, index) => h('div', { key: `${item.time}-${index}`, className: 'pm-notice' }, item.text))) : null,
+        h('div', { className: 'pm-composer' },
           picker === 'command' ? h('div', { className: 'pm-picker' },
-            h('div', { className: 'pm-picker-title' }, '斜杠命令'),
-            commandSuggestions.length
-              ? null
-              : h('div', { className: 'pm-picker-empty' }, '还没有可用命令'),
-            commandSuggestions.map((item, index) => h('button', {
+            h('div', { className: 'pm-picker-title' }, '命令'),
+            h('div', { className: 'pm-picker-list' }, (composer && composer.commands ? composer.commands : []).map((item, index) => h('button', {
               key: item.name,
-              className: cx('pm-picker-item', index === pickIndex ? 'is-active' : ''),
+              type: 'button',
+              className: cx('pm-picker-item', index === pickIndex && 'is-active'),
               onMouseEnter: () => setPickIndex(index),
               onClick: () => insertCommand(item.name)
-            }, h('span', { className: 'pm-picker-name' }, '/' + item.name),
-            h('span', { className: 'pm-picker-path' }, item.description || '')))) : null,
-
-          picker === 'model' ? h('div', { className: 'pm-picker is-menu' },
-            h('div', { className: 'pm-picker-title' }, '选择模型'),
-            (composer.models || []).map((item) => h('button', {
-              key: item.provider + '/' + item.model,
-              className: cx('pm-picker-item', selection && selection.model === item.model ? 'is-active' : ''),
-              onClick: () => pickModel(item)
-            }, h('span', { className: 'pm-picker-name' }, item.modelName),
-            h('span', { className: 'pm-picker-path' }, item.providerName)))) : null,
-
-          picker === 'permission' ? h('div', { className: 'pm-picker is-menu' },
+            },
+              h('span', { className: 'pm-picker-name' }, `/${item.name}`),
+              h('span', { className: 'pm-picker-path' }, item.description || ''))))) : null,
+          picker === 'model' ? h('div', { className: 'pm-picker' },
+            h('div', { className: 'pm-picker-title' }, '模型'),
+            h('div', { className: 'pm-picker-list' }, (composer && composer.models ? composer.models : []).map((item, index) => h('button', {
+              key: `${item.provider}/${item.model}`,
+              type: 'button',
+              className: cx('pm-picker-item', index === pickIndex && 'is-active'),
+              onMouseEnter: () => setPickIndex(index),
+              onClick: () => void pickModel(item)
+            },
+              h('span', { className: 'pm-picker-name' }, item.modelName),
+              h('span', { className: 'pm-picker-path' }, `${item.providerName}${selection && selection.model === item.model ? ' · 当前' : ''}`))))) : null,
+          picker === 'permission' ? h('div', { className: 'pm-picker' },
             h('div', { className: 'pm-picker-title' }, '权限模式'),
-            ((composer.permission && composer.permission.presets) || []).map((item) => h('button', {
+            h('div', { className: 'pm-picker-list' }, (composer && composer.permission ? composer.permission.presets : []).map((item, index) => h('button', {
               key: item.id,
-              className: cx('pm-picker-item', presetId === item.id ? 'is-active' : ''),
-              onClick: () => pickPermission(item)
-            }, h('span', { className: 'pm-picker-name' }, item.name),
-            h('span', { className: 'pm-picker-path' }, item.hint || '')))) : null,
-
+              type: 'button',
+              className: cx('pm-picker-item', index === pickIndex && 'is-active'),
+              onMouseEnter: () => setPickIndex(index),
+              onClick: () => void pickPermission(item.id)
+            },
+              h('span', { className: 'pm-picker-name' }, item.name),
+              h('span', { className: 'pm-picker-path' }, item.hint || ''))))) : null,
+          picker === 'file' ? h(MentionList, { items: mentions, index: pickIndex, onHover: setPickIndex, onPick: (item) => insertMention(item.path) }) : null,
           h('textarea', {
-            className: 'pm-chat-input',
-            rows: 2,
+            className: 'pm-composer-input',
             ref: inputRef,
             value: draft,
-            placeholder: running
-              ? '它正在处理，可以继续留言（会排队）'
-              : '说点什么…（@ 选文件、/ 用命令，Enter 发送，Shift+Enter 换行）',
-            onChange: (event) => {
-              setDraft(event.target.value);
-              const next = event.target.value;
-              if (/(^|\s)@[^\s@]*$/.test(next) && !isOverview) {
-                setPicker('file');
-              } else if (/^\/[^\s]*$/.test(next)) {
-                setPicker('command');
-              } else if (picker === 'file' || picker === 'command') {
-                setPicker('');
-              }
-            },
-            onKeyDown: (event) => {
-              if (event.key === 'Escape') {
-                setPicker('');
-                return;
-              }
-              if (picker === 'file' || picker === 'command') {
-                if (event.key === 'ArrowDown') {
-                  event.preventDefault();
-                  setPickIndex((prev) => prev + 1);
-                  return;
-                }
-                if (event.key === 'ArrowUp') {
-                  event.preventDefault();
-                  setPickIndex((prev) => (prev > 0 ? prev - 1 : 0));
-                  return;
-                }
-                if (event.key === 'Enter' && !event.shiftKey && runPicker()) {
-                  event.preventDefault();
-                  return;
-                }
-              }
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                send();
-              }
-            }
+            rows: 2,
+            placeholder: bound ? '说点什么…  输入 @ 引文件，/ 跑命令' : '先绑一个会话再说话',
+            onChange,
+            onKeyDown
           }),
-
           h('div', { className: 'pm-composer-bar' },
             h('div', { className: 'pm-composer-left' },
-              h('button', {
-                className: cx('pm-btn is-ghost pm-icon-btn', picker === 'file' ? 'is-primary' : ''),
-                title: isOverview ? '总览没有项目文件，去项目页里引用' : '引用项目文件（也可以直接输入 @）',
-                disabled: isOverview,
-                onClick: () => {
-                  const word = mentionWord;
-                  if (!word && !/(^|\s)@[^\s@]*$/.test(draft)) setDraft((prev) => prev + (prev && !/\s$/.test(prev) ? ' ' : '') + '@');
-                  setPickIndex(0);
-                  setPicker('file');
-                  const node = inputRef.current;
-                  if (node) node.focus();
-                }
-              }, '＋'),
-              h('button', {
-                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'command' ? 'is-primary' : ''),
-                title: '斜杠命令',
-                onClick: () => {
-                  if (!String(draft).startsWith('/')) setDraft('/');
-                  setPickIndex(0);
-                  setPicker('command');
-                  const node = inputRef.current;
-                  if (node) node.focus();
-                }
-              }, '/ 命令'),
-              h('button', {
-                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'permission' ? 'is-primary' : ''),
-                title: bound ? '切换权限模式' : '先发一句话建好会话',
-                onClick: () => {
-                  setPickIndex(0);
-                  setPicker(picker === 'permission' ? '' : 'permission');
-                }
-              }, presetName)),
-
+              h('button', { type: 'button', className: 'pm-chip-btn', onClick: () => setPicker(picker === 'file' ? '' : 'file') }, '＋ 文件'),
+              h('button', { type: 'button', className: 'pm-chip-btn', onClick: () => setPicker(picker === 'command' ? '' : 'command') }, '/ 命令'),
+              h('button', { type: 'button', className: 'pm-chip-btn', onClick: () => setPicker(picker === 'permission' ? '' : 'permission') }, permissionName)),
             h('div', { className: 'pm-composer-right' },
-              selection && selection.reasoningEffort
-                ? h('button', {
-                  className: 'pm-btn is-ghost pm-chip-btn',
-                  title: '点击切换思考档位（' + selection.reasoningEffort + '）',
-                  onClick: cycleEffort
-                }, selection.reasoningEffort)
-                : null,
-              h('button', {
-                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'model' ? 'is-primary' : ''),
-                title: bound ? '切换模型' : '先发一句话建好会话',
-                onClick: () => {
-                  setPickIndex(0);
-                  setPicker(picker === 'model' ? '' : 'model');
-                }
-              }, modelName),
-              h('button', {
-                className: 'pm-btn is-primary',
-                onClick: send,
-                disabled: sending || !String(draft || '').trim()
-              }, sending ? h(Spinner) : null, '发送'))),
-          props.actions || null));
+              h('button', { type: 'button', className: 'pm-chip-btn is-effort', onClick: () => void cycleEffort(), title: '切换思考档位' }, (selection && selection.reasoningEffort) || '档位'),
+              h('button', { type: 'button', className: 'pm-chip-btn is-model', onClick: () => setPicker(picker === 'model' ? '' : 'model') }, modelName),
+              h('button', { type: 'button', className: cx('pm-send', busy === 'send' && 'is-busy'), onClick: () => void send(), title: '发送（Enter）' }, '↑')))));
     }
 
-    /* ------------------------------ 总览 */
+    /* ------------------------------------------------------------- 文件面板 */
 
-    function OverviewPane(props) {
-      const projects = props.projects || [];
-      const [data, setData] = useState(null);
+    function FilePanel(props) {
+      const { scene, panel, selection, onPick, say } = props;
+      const [nodes, setNodes] = useState({});
+      const [open, setOpen] = useState({});
+      const [busy, setBusy] = useState(false);
       const [error, setError] = useState('');
-      const [query, setQuery] = useState('');
-      const [search, setSearch] = useState(null);
-      const [busySearch, setBusySearch] = useState(false);
-      const [range, setRange] = useState('week');
-      const [report, setReport] = useState(null);
-      const [busyReport, setBusyReport] = useState(false);
-      const say = props.say || (() => {});
+      const root = panel.root || scene.root || '';
 
-      const load = useCallback(async () => {
+      const loadDir = useCallback(async (rel) => {
         try {
-          setData(await call('/overview'));
+          const value = await get(`/tree?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}&path=${encodeURIComponent(rel)}`);
+          setNodes((prev) => ({ ...prev, [rel]: value.nodes || [] }));
           setError('');
         } catch (err) {
           setError(msg(err));
         }
-      }, []);
+      }, [scene.id, panel.id]);
 
       useEffect(() => {
-        load();
-      }, [load]);
+        setNodes({});
+        setOpen({});
+        if (!root) return;
+        setBusy(true);
+        void loadDir('').finally(() => setBusy(false));
+      }, [root, loadDir]);
 
-      const runSearch = async () => {
-        const text = String(query || '').trim();
-        if (!text) {
-          setSearch(null);
-          return;
-        }
-        setBusySearch(true);
-        try {
-          setSearch(await call('/search?q=' + encodeURIComponent(text)));
-        } catch (err) {
-          say('搜索失败：' + msg(err), 'error');
-        } finally {
-          setBusySearch(false);
-        }
+      const toggle = async (node) => {
+        const rel = node.path;
+        const next = { ...open, [rel]: !open[rel] };
+        setOpen(next);
+        if (next[rel] && !nodes[rel]) await loadDir(rel);
       };
 
-      const runReport = async () => {
-        setBusyReport(true);
-        try {
-          const value = await call('/report?range=' + range);
-          setReport({ ...value, range, text: value.markdown || value.text || '' });
-        } catch (err) {
-          say('生成失败：' + msg(err), 'error');
-        } finally {
-          setBusyReport(false);
-        }
+      const renderNodes = (rel, depth) => {
+        const list = nodes[rel] || [];
+        if (!list.length) return null;
+        return h('div', { className: 'pm-tree-group' }, list.map((node) => {
+          const isOpen = Boolean(open[node.path]);
+          const picked = selection && selection.path === node.path;
+          return h('div', { key: node.path, className: 'pm-tree-node' },
+            h('button', {
+              type: 'button',
+              className: cx('pm-tree-row', picked && 'is-active', node.dir && 'is-dir'),
+              style: { paddingLeft: `${6 + depth * 12}px` },
+              title: node.path,
+              onClick: () => (node.dir ? void toggle(node) : onPick({ panelId: panel.id, path: node.path, name: node.name, kind: node.kind }))
+            },
+              h('span', { className: 'pm-tree-caret' }, node.dir ? (isOpen ? '▾' : '▸') : '·'),
+              h('span', { className: 'pm-tree-name' }, node.name),
+              h('span', { className: 'pm-tree-kind' }, node.dir ? '' : kindLabel(node.kind))),
+            node.dir && isOpen ? renderNodes(node.path, depth + 1) : null);
+        }));
       };
 
-      const copyReport = async () => {
-        if (!report) return;
-        const ok = await copyText(report.text);
-        say(ok ? '已复制到剪贴板，可直接贴给智能体' : '复制失败，请手动选中复制', ok ? 'ok' : 'error');
-      };
-
-      const saveReport = async () => {
-        if (!report) return;
-        try {
-          const value = await post('/report/save', { text: report.text, range: report.range });
-          say('已保存到 ' + value.rel);
-        } catch (err) {
-          say('保存失败：' + msg(err), 'error');
-        }
-      };
-
-      const totals = (data && data.totals) || {};
-      const cards = (data && data.projects) || [];
-
-      return h('div', { className: 'pm-ov' },
-        h('header', { className: 'pm-ov-head' },
-          h('div', null,
-            h('div', { className: 'pm-ov-title' }, '总览'),
-            h('div', { className: 'pm-muted' }, '所有项目的汇总、跨项目检索与周报 / 月报草稿')),
-          h('div', { className: 'pm-ov-stats' },
-            h('span', { className: 'pm-ov-stat' }, h('b', null, String(totals.projects || 0)), ' 项目'),
-            h('span', { className: 'pm-ov-stat' }, h('b', null, String(totals.files || 0)), ' 文件'),
-            h('span', { className: 'pm-ov-stat' }, h('b', null, String(totals.weekChanged || 0)), ' 近 7 天改动'),
-            h('span', { className: 'pm-ov-stat' }, h('b', null, String(totals.open || 0)), ' 待办'),
-            h('button', { className: 'pm-btn is-ghost pm-icon-btn', onClick: load }, '刷新'))),
-
-        h('div', { className: 'pm-ov-body' },
-          h('div', { className: 'pm-ov-main' },
-            error ? h('div', { className: 'pm-ov-note is-error' }, error) : null,
-
-            h('section', { className: 'pm-ov-section' },
-              h('div', { className: 'pm-ov-sec-head' }, '项目'),
-              cards.length
-                ? h('div', { className: 'pm-ov-cards' }, cards.map((card) =>
-                  h('button', {
-                    key: card.id,
-                    className: 'pm-ov-card',
-                    onClick: () => props.onOpenProject(card.id)
-                  },
-                    h('div', { className: 'pm-ov-card-top' },
-                      h('span', { className: 'pm-ov-card-name' }, card.name),
-                      card.missing ? h('span', { className: 'pm-pill is-warn' }, '目录缺失') : null),
-                    h('div', { className: 'pm-ov-card-path' }, card.root),
-                    h('div', { className: 'pm-ov-card-row' },
-                      h('span', null, '文档 ' + ((card.stats && card.stats.doc) || 0)),
-                      h('span', null, 'PPT ' + ((card.stats && card.stats.ppt) || 0)),
-                      h('span', null, '表格 ' + ((card.stats && card.stats.xls) || 0)),
-                      h('span', null, 'PDF ' + ((card.stats && card.stats.pdf) || 0))),
-                    h('div', { className: 'pm-ov-card-row' },
-                      h('span', null, '近 7 天改动 ' + ((card.weekChanged ?? card.recentCount) || 0)),
-                      h('span', null, '待办 ' + ((card.board && card.board.open) || 0)),
-                      h('span', null, '模块 ' + (card.modules || 0))),
-                    card.recent && card.recent.length
-                      ? h('div', { className: 'pm-ov-card-files' },
-                        card.recent.slice(0, 3).map((file) =>
-                          h('span', { key: file.rel, className: 'pm-ov-file' }, file.name)))
-                      : null)))
-                : h('div', { className: 'pm-empty-small' }, '还没有项目，先在左侧添加一个目录。')),
-
-            h('section', { className: 'pm-ov-section' },
-              h('div', { className: 'pm-ov-sec-head' }, '跨项目检索'),
-              h('div', { className: 'pm-ov-search' },
-                h('input', {
-                  className: 'pm-input',
-                  value: query,
-                  placeholder: '搜文件名或文件内容，如：技术方案 / 里程碑',
-                  onChange: (event) => setQuery(event.target.value),
-                  onKeyDown: (event) => {
-                    if (event.key === 'Enter') runSearch();
-                  }
-                }),
-                h('button', { className: 'pm-btn', onClick: runSearch, disabled: busySearch },
-                  busySearch ? h(Spinner) : null, '搜一下')),
-              search
-                ? h('div', { className: 'pm-ov-hits' },
-                  search.hits.length === 0
-                    ? h('div', { className: 'pm-empty-small' }, '没有命中')
-                    : search.hits.map((hit, index) =>
-                      h('div', { key: 'h' + index, className: 'pm-ov-hit' },
-                        h('span', { className: 'pm-ov-hit-proj' }, hit.projectName),
-                        h('span', { className: 'pm-ov-hit-rel' }, hit.rel),
-                        h('span', { className: 'pm-ov-hit-kind' }, hit.kind === 'name' ? '文件名' : '第 ' + hit.line + ' 行'),
-                        h('div', { className: 'pm-ov-hit-text' }, hit.text || ''))))
-                : null),
-
-            h('section', { className: 'pm-ov-section' },
-              h('div', { className: 'pm-ov-sec-head' },
-                '周报 / 月报',
-                h('span', { className: 'pm-ov-sec-actions' },
-                  h('button', { className: cx('pm-chip', range === 'week' ? 'is-on' : ''), onClick: () => setRange('week') }, '周报'),
-                  h('button', { className: cx('pm-chip', range === 'month' ? 'is-on' : ''), onClick: () => setRange('month') }, '月报'),
-                  h('button', { className: 'pm-btn', onClick: runReport, disabled: busyReport },
-                    busyReport ? h(Spinner) : null, '生成草稿'))),
-              report
-                ? h('div', { className: 'pm-ov-report' },
-                  h('pre', { className: 'pm-ov-report-body' }, report.text),
-                  h('div', { className: 'pm-ov-report-actions' },
-                    h('button', { className: 'pm-btn', onClick: copyReport }, '复制'),
-                    h('button', { className: 'pm-btn is-ghost', onClick: saveReport }, '保存成 md'),
-                    h('span', { className: 'pm-muted' }, '复制后贴到右侧对话，可让智能体润色成正式稿。')))
-                : h('div', { className: 'pm-empty-small' },
-                  '按时间窗汇总各项目的改动清单、未完成待办与模块名册，生成可直接润色的 Markdown 草稿。'))),
-
-          h('aside', { className: 'pm-ov-chat' },
-            h(ChatPane, {
-              target: 'overview',
-              say,
-              onSession: () => load()
-            }))));
+      return h('section', { className: 'pm-pane pm-pane-file' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' }, h('span', { className: 'pm-pane-dot is-file' }), h('span', null, panel.title || '文件')),
+          h('div', { className: 'pm-pane-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: busy, onClick: () => { setBusy(true); void loadDir('').finally(() => setBusy(false)); } }, '刷新'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => post('/open', { sceneId: scene.id, panelId: panel.id, path: '' }).catch((err) => say(msg(err), 'error')) }, '目录'))),
+        h('div', { className: 'pm-tree' },
+          busy && !Object.keys(nodes).length ? h('div', { className: 'pm-tree-loading' }, h(Spinner, null)) : null,
+          error ? h('div', { className: 'pm-tree-error' }, error) : null,
+          !root ? h(Empty, { title: '这个场景还没设根目录', hint: '编辑场景 JSON，把 root 填成要看的目录' }) : null,
+          root && !error && !busy && !(nodes[''] || []).length ? h(Empty, { title: '目录是空的', hint: root }) : null,
+          root ? renderNodes('', 0) : null));
     }
 
-    /* ------------------------------ 智能体一栏 */
+    /* --------------------------------------------------------- 预览 / 编辑 */
 
-    function AgentPane(props) {
-      const project = props.project;
-      const presets = props.presets || [];
-      const [form, setForm] = useState(null);
-      const [busyOpen, setBusyOpen] = useState(false);
+    function OfficePreview(props) {
+      const { scene, panel, path, say } = props;
+      const [state, setState] = useState({ status: 'idle', tiles: [], error: '' });
 
-      const modules = project.modules || [];
-      const active = modules.filter((item) => item.enabled !== false);
-
-      const saveModules = (next) => {
-        props.patch({ modules: next });
-      };
-
-      const startAdd = () => {
-        setForm({ id: '', name: '', role: '', deliverables: '', instructions: '' });
-      };
-
-      const startEdit = (item) => {
-        setForm({ id: item.id, name: item.name, role: item.role, deliverables: item.deliverables, instructions: item.instructions });
-      };
-
-      const applyPreset = (preset) => {
-        setForm({
-          id: '',
-          name: preset.name,
-          role: preset.role,
-          deliverables: preset.deliverables,
-          instructions: preset.instructions
-        });
-      };
-
-      const commit = () => {
-        if (!form) return;
-        const name = String(form.name || '').trim();
-        if (!name) {
-          props.say('模块名不能为空', 'error');
-          return;
-        }
-        const entry = {
-          id: form.id || 'm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-          name,
-          role: String(form.role || '').trim(),
-          deliverables: String(form.deliverables || '').trim(),
-          instructions: String(form.instructions || '').trim(),
-          enabled: form.id ? (modules.find((item) => item.id === form.id) || {}).enabled !== false : true
-        };
-        const next = form.id
-          ? modules.map((item) => (item.id === form.id ? entry : item))
-          : modules.concat([entry]);
-        saveModules(next);
-        setForm(null);
-      };
-
-      const openLead = async () => {
-        setBusyOpen(true);
+      const render = useCallback(async (refresh) => {
+        setState((prev) => ({ ...prev, status: 'loading', error: '' }));
         try {
-          await props.onOpenLead();
-        } catch (error) {
-          props.say('打开会话失败：' + msg(error), 'error');
-        } finally {
-          setBusyOpen(false);
+          const value = await post('/preview', { sceneId: scene.id, panelId: panel.id, path, refresh: Boolean(refresh) });
+          setState({ status: 'ready', tiles: value.tiles || [], error: '', key: value.key, pageCount: value.pageCount, backend: value.backend, missingFonts: value.missingFonts || [] });
+        } catch (err) {
+          setState({ status: 'error', tiles: [], error: msg(err) });
         }
-      };
+      }, [scene.id, panel.id, path]);
 
-      return h(
-        'section',
-        { className: 'pm-pane pm-agents' },
-        h('div', { className: 'pm-pane-head' },
-          h('span', { className: 'pm-pane-title' }, '智能体'),
-          h('span', { className: 'pm-pane-sub' }, '1 主 + ' + active.length + ' 子')),
+      useEffect(() => {
+        void render(false);
+      }, [render]);
 
-        h('div', { className: 'pm-pane-body pm-agent-body' },
-          /* 主智能体：面板内直接对话 */
-          h('div', { className: 'pm-chat-slot' },
-            h(ChatPane, {
-              projectId: project.id,
-              say: props.say,
-              onSession: (sessionId) => {
-                if (sessionId) props.patch({ leadSessionId: sessionId });
-              },
-              actions: h('span', { className: 'pm-chat-links' },
-                h('button', { className: 'pm-btn is-ghost pm-icon-btn', onClick: props.onBrief, disabled: props.briefBusy },
-                  props.briefBusy ? h(Spinner) : null, '协作档案'),
-                h('button', { className: 'pm-btn is-ghost pm-icon-btn', onClick: props.onCopyLaunch }, '启动指令'),
-                project.leadSessionId
-                  ? h('button', { className: 'pm-btn is-ghost pm-icon-btn', onClick: openLead, disabled: busyOpen }, '在会话页打开')
-                  : null)
-            }))
-
-          /* 子智能体模块 */
-          , h('div', { className: 'pm-card pm-card-grow' },
-            h('div', { className: 'pm-card-head' },
-              h('span', { className: 'pm-card-title' }, '子智能体模块'),
-              h('button', { className: 'pm-btn is-ghost', onClick: startAdd }, '＋ 新增')),
-            h('p', { className: 'pm-card-note' },
-              '每个模块一个子智能体，由主智能体按模块派单。名册会写进 _pm/ 供它读取。'),
-
-            form
-              ? h('div', { className: 'pm-form' },
-                h('div', { className: 'pm-form-row' },
-                  h('label', { className: 'pm-label' }, '模块名'),
-                  h('input', {
-                    className: 'pm-input',
-                    value: form.name,
-                    placeholder: '如：技术方案',
-                    autoFocus: true,
-                    onChange: (event) => setForm({ ...form, name: event.target.value })
-                  })),
-                h('div', { className: 'pm-form-row' },
-                  h('label', { className: 'pm-label' }, '职责'),
-                  h('textarea', {
-                    className: 'pm-input pm-input-multi',
-                    rows: 2,
-                    value: form.role,
-                    placeholder: '这个子智能体负责什么',
-                    onChange: (event) => setForm({ ...form, role: event.target.value })
-                  })),
-                h('div', { className: 'pm-form-row' },
-                  h('label', { className: 'pm-label' }, '交付物'),
-                  h('input', {
-                    className: 'pm-input',
-                    value: form.deliverables,
-                    placeholder: '如：技术方案.md、架构图',
-                    onChange: (event) => setForm({ ...form, deliverables: event.target.value })
-                  })),
-                h('div', { className: 'pm-form-row' },
-                  h('label', { className: 'pm-label' }, '补充要求'),
-                  h('textarea', {
-                    className: 'pm-input pm-input-multi',
-                    rows: 2,
-                    value: form.instructions,
-                    placeholder: '边界、格式、参考资料等',
-                    onChange: (event) => setForm({ ...form, instructions: event.target.value })
-                  })),
-                presets.length
-                  ? h('div', { className: 'pm-presets' },
-                    h('span', { className: 'pm-label' }, '快速套用'),
-                    presets.map((preset) =>
-                      h('button', { key: preset.key, className: 'pm-chip', onClick: () => applyPreset(preset) }, preset.name)))
-                  : null,
-                h('div', { className: 'pm-actions' },
-                  h('button', { className: 'pm-btn is-primary', onClick: commit }, form.id ? '保存模块' : '添加模块'),
-                  h('button', { className: 'pm-btn is-ghost', onClick: () => setForm(null) }, '取消')))
-              : null,
-
-            modules.length === 0 && !form
-              ? h('div', { className: 'pm-empty-small' },
-                h('p', null, '还没有配置子智能体模块。'),
-                h('p', { className: 'pm-muted' }, '可以从「技术方案 / 评审材料 / 汇报 PPT / 数据表格」等预设开始。'))
-              : null,
-
-            h('div', { className: 'pm-mod-list' },
-              modules.map((item) =>
-                h('div', { key: item.id, className: cx('pm-mod', item.enabled === false ? 'is-off' : '') },
-                  h('div', { className: 'pm-mod-head' },
-                    h('span', { className: 'pm-mod-name' }, item.name),
-                    h('button', {
-                      className: cx('pm-switch', item.enabled === false ? '' : 'is-on'),
-                      title: item.enabled === false ? '启用' : '停用',
-                      onClick: () => saveModules(modules.map((one) =>
-                        one.id === item.id ? { ...one, enabled: one.enabled === false } : one))
-                    }, h('span', { className: 'pm-switch-dot' }))),
-                  item.role ? h('p', { className: 'pm-mod-role' }, item.role) : null,
-                  item.deliverables ? h('p', { className: 'pm-mod-meta' }, '交付：' + item.deliverables) : null,
-                  h('div', { className: 'pm-mod-actions' },
-                    h('button', { className: 'pm-btn is-ghost', onClick: () => startEdit(item) }, '编辑'),
-                    h('button', { className: 'pm-btn is-ghost', onClick: () => props.onCopyModule(item) }, '复制简报'),
-                    h('button', {
-                      className: 'pm-btn is-ghost is-danger',
-                      onClick: async () => {
-                        if (await props.ask('删除模块「' + item.name + '」？')) {
-                          saveModules(modules.filter((one) => one.id !== item.id));
-                        }
-                      }
-                    }, '删除'))))
-            ))
-        )
-      );
+      if (state.status === 'loading' || state.status === 'idle') {
+        return h('div', { className: 'pm-preview-loading' }, h(Spinner, { large: true }), h('div', null, '正在用内置引擎渲染…'));
+      }
+      if (state.status === 'error') {
+        return h('div', { className: 'pm-preview-error' },
+          h('div', { className: 'pm-preview-error-title' }, '渲染不出来'),
+          h('div', { className: 'pm-preview-error-text' }, state.error),
+          h('div', { className: 'pm-preview-error-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => void render(true) }, '重试'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => post('/open', { sceneId: scene.id, panelId: panel.id, path }).catch((err) => say(msg(err), 'error')) }, '用系统程序打开')));
+      }
+      return h('div', { className: 'pm-preview' },
+        h('div', { className: 'pm-preview-bar' },
+          h('span', null, `共 ${state.pageCount || state.tiles.length} 页 · ${state.backend || 'engine'}`),
+          h('span', { className: 'pm-preview-spacer' }),
+          h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => void render(true) }, '重新渲染'),
+          h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => post('/open', { sceneId: scene.id, panelId: panel.id, path }).catch((err) => say(msg(err), 'error')) }, '外部打开')),
+        h('div', { className: 'pm-preview-pages' }, state.tiles.map((tile) => h('img', {
+          key: tile.name,
+          className: 'pm-preview-page',
+          alt: tile.name,
+          src: `${API}/preview/tile?key=${encodeURIComponent(state.key)}&name=${encodeURIComponent(tile.name)}`
+        }))));
     }
 
-    /* ------------------------------ 项目窗口 */
-
-    /* ------------------------------ Office 内嵌预览 */
-
-    function DocPreview(props) {
-      const { projectId, rel, info, doc } = props;
-      if (!doc || doc.status === 'loading') {
-        return h('div', { className: 'pm-doc-loading' },
-          h(Spinner),
-          h('div', { className: 'pm-doc-loading-text' },
-            h('p', { className: 'pm-empty-title' }, '正在生成预览…'),
-            h('p', { className: 'pm-muted' }, '首次打开 office 文档需要 1–3 秒，之后直接读缓存。')),
-          h('p', { className: 'pm-muted' }, info.name));
-      }
-      if (doc.status === 'error') {
-        return h('div', { className: 'pm-empty' },
-          h('p', { className: 'pm-empty-title' }, info.name),
-          h('p', { className: 'pm-muted' }, doc.message || '预览失败'),
-          h('p', { className: 'pm-muted' }, fmtSize(info.size) + ' · ' + fmtTime(info.mtimeMs)),
-          h('div', { className: 'pm-empty-actions' },
-            h('button', { className: 'pm-btn is-primary', onClick: props.onRetry }, '重试'),
-            h('button', { className: 'pm-btn', onClick: props.onOpenExternal }, '用系统程序打开')));
-      }
-      const tiles = Array.isArray(doc.tiles) ? doc.tiles : [];
-      if (!tiles.length) {
-        return h('div', { className: 'pm-empty' },
-          h('p', { className: 'pm-empty-title' }, info.name),
-          h('p', { className: 'pm-muted' }, '这个文档没有可显示的页面。'),
-          h('button', { className: 'pm-btn is-primary', onClick: props.onOpenExternal }, '用系统程序打开'));
-      }
-      return h('div', { className: 'pm-doc' },
-        h('div', { className: 'pm-doc-scroll' },
-          ...tiles.map((tile, index) => h('figure', { className: 'pm-page-wrap', key: tile.name },
-            h('img', {
-              className: 'pm-page',
-              alt: tile.sheet ? '工作表 ' + tile.sheet : '第 ' + (tile.page || index + 1) + ' 页',
-              loading: 'lazy',
-              src: API + '/preview/tile?' + new URLSearchParams({
-                projectId,
-                path: rel,
-                tile: tile.name,
-                v: String(doc.mtimeMs || '')
-              }).toString()
-            }),
-            h('figcaption', { className: 'pm-page-cap' },
-              tile.sheet ? ('工作表 ' + tile.sheet) : ('第 ' + (tile.page || index + 1) + ' 页'),
-              ' / ' + String(doc.pageCount || tiles.length))))),
-        h('div', { className: 'pm-doc-foot' },
-          h('span', { className: 'pm-doc-note' }, '由内置引擎渲染 · 只读，改文档请用「外部打开」'),
-          doc.missingFonts && doc.missingFonts.length
-            ? h('span', { className: 'pm-doc-note' }, '缺字体：' + doc.missingFonts.join('、'))
-            : null));
-    }
-
-    function ProjectWindow(props) {
-      const project = props.project;
-      const projectId = project.id;
-      const say = props.say;
-      const get = props.get;
-
-      const [nodes, setNodes] = useState({});
-      const [expanded, setExpanded] = useState(() => new Set());
-      const [sel, setSel] = useState(null);
+    function ViewPanel(props) {
+      const { scene, panel, selection, say } = props;
+      const path = selection && selection.path ? selection.path : '';
+      const [info, setInfo] = useState(null);
       const [draft, setDraft] = useState('');
-      const [dirty, setDirty] = useState(false);
+      const [savedText, setSavedText] = useState('');
+      const [mtimeMs, setMtimeMs] = useState(0);
       const [saving, setSaving] = useState(false);
+      const [loading, setLoading] = useState(false);
       const [preview, setPreview] = useState(false);
-      const [doc, setDoc] = useState(null);
-      const [busyBrief, setBusyBrief] = useState(false);
-      const [renaming, setRenaming] = useState(null);
-      const [pendingRel, setPendingRel] = useState(null);
-      const [notesOpen, setNotesOpen] = useState(false);
-      const [notesDraft, setNotesDraft] = useState(project.notes || '');
-      const [aiBusy, setAiBusy] = useState('');
-      const [autoSave, setAutoSave] = useState(() => {
-        try {
-          return localStorage.getItem('dafeiyu.autosave') !== 'off';
-        } catch {
-          return true;
-        }
-      });
-      const [showFiles, setShowFiles] = useState(() => readPref('dafeiyu.pane.files', true));
-      const [showAgent, setShowAgent] = useState(() => readPref('dafeiyu.pane.agent', true));
-
-      const togglePane = (pane) => {
-        if (pane === 'files') {
-          const next = !showFiles;
-          setShowFiles(next);
-          writePref('dafeiyu.pane.files', next);
-        } else {
-          const next = !showAgent;
-          setShowAgent(next);
-          writePref('dafeiyu.pane.agent', next);
-        }
-      };
-
-      const toggleFocus = () => {
-        const focusing = showFiles || showAgent;
-        setShowFiles(!focusing);
-        setShowAgent(!focusing);
-        writePref('dafeiyu.pane.files', !focusing);
-        writePref('dafeiyu.pane.agent', !focusing);
-        say(focusing ? '专注模式：只留文档，再点一次恢复' : '已恢复文件树和智能体栏');
-      };
-
-      /* 场景模板：project.layout 存场景 id，空 = 经典三栏 */
-      const scenarios = Array.isArray(props.scenarios) ? props.scenarios : [];
-      const sceneId = typeof project.layout === 'string' ? project.layout : '';
-      const scene = sceneId ? scenarios.find((item) => item.id === sceneId) || null : null;
-      const scenePanel = (type) => (scene && Array.isArray(scene.panels)
-        ? scene.panels.find((panel) => panel.type === type) || null
-        : null);
-      const sceneStyle = (type) => {
-        const panel = scenePanel(type);
-        if (!panel) return null;
-        return {
-          gridColumn: panel.col + ' / span ' + panel.w,
-          gridRow: panel.row + ' / span ' + panel.h
-        };
-      };
-      const sceneTag = (type) => {
-        const panel = scenePanel(type);
-        if (!panel) return null;
-        return h('div', { className: 'pm-scene-tag' },
-          h('span', { className: 'pm-scene-name' }, panel.title || type),
-          panel.sub ? h('span', { className: 'pm-scene-sub' }, panel.sub) : null);
-      };
-      const switchLayout = async (nextId) => {
-        try {
-          const value = await post('/project/update', { id: project.id, patch: { layout: nextId } });
-          if (value && value.project) props.onPatched(value.project, value.stats);
-          const picked = scenarios.find((item) => item.id === nextId);
-          say(nextId ? '已切到「' + ((picked && picked.name) || nextId) + '」布局' : '已切回三栏布局');
-        } catch (err) {
-          say('切换布局失败：' + msg(err), 'error');
-        }
-      };
-
-      const selRef = useRef(null);
-      selRef.current = sel;
+      const [autoSave, setAutoSave] = useState(() => readPref('dafeiyu.view.autosave', true));
       const editorRef = useRef(null);
 
-      const patch = useCallback((changes) => {
-        post('/project/update', { id: projectId, patch: changes })
-          .then((value) => props.onPatched(value.project, value.stats))
-          .catch((error) => say('保存失败：' + msg(error), 'error'));
-      }, [projectId, props.onPatched, say]);
-
-      const loadDir = useCallback(async (rel) => {
-        setNodes((prev) => ({ ...prev, [rel]: { ...(prev[rel] || {}), loading: true, error: '' } }));
+      const load = useCallback(async (rel) => {
+        if (!rel) {
+          setInfo(null);
+          return;
+        }
+        setLoading(true);
         try {
-          const value = await call('/tree', { projectId, path: rel });
-          setNodes((prev) => ({ ...prev, [rel]: { entries: value.entries || [], loading: false, error: '' } }));
-          return value;
-        } catch (error) {
-          setNodes((prev) => ({ ...prev, [rel]: { entries: [], loading: false, error: msg(error) } }));
-          return null;
+          const value = await get(`/file?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}&path=${encodeURIComponent(rel)}`);
+          setInfo(value);
+          setDraft(typeof value.text === 'string' ? value.text : '');
+          setSavedText(typeof value.text === 'string' ? value.text : '');
+          setMtimeMs(value.mtimeMs || 0);
+        } catch (err) {
+          say(msg(err), 'error');
+          setInfo(null);
+        } finally {
+          setLoading(false);
         }
-      }, [projectId]);
-
-      const openFile = useCallback(async (rel, force) => {
-        if (!rel) return;
-        if (dirty && !force) {
-          const ok = await props.ask('当前文件有未保存的修改，放弃并打开另一个文件？');
-          if (!ok) return;
-        }
-        try {
-          const info = await call('/file', { projectId, path: rel });
-          setSel({ rel, info });
-          setDraft(info.text || '');
-          setDirty(false);
-          setPreview(info.kind === 'text' && /\.(md|markdown)$/i.test(rel));
-          if (project.lastRel !== rel) patch({ lastRel: rel });
-        } catch (error) {
-          say('打不开：' + msg(error), 'error');
-        }
-      }, [dirty, patch, project.lastRel, projectId, say]);
-
-      const loadDoc = useCallback(async (rel, force) => {
-        if (!rel) return;
-        setDoc({ status: 'loading', rel });
-        try {
-          const value = await post('/preview', { projectId, path: rel, refresh: Boolean(force) });
-          setDoc({ status: 'ready', rel, ...value });
-        } catch (error) {
-          setDoc({ status: 'error', rel, message: msg(error), code: error.code || '' });
-        }
-      }, [projectId]);
+      }, [scene.id, panel.id, say]);
 
       useEffect(() => {
-        const current = sel;
-        if (!current || current.info.kind !== 'office') {
-          setDoc(null);
-          return undefined;
-        }
-        let alive = true;
-        setDoc({ status: 'loading', rel: current.rel });
-        post('/preview', { projectId, path: current.rel })
-          .then((value) => {
-            if (alive) setDoc({ status: 'ready', rel: current.rel, ...value });
-          })
-          .catch((error) => {
-            if (alive) setDoc({ status: 'error', rel: current.rel, message: msg(error), code: error.code || '' });
-          });
-        return () => {
-          alive = false;
-        };
-        // 换文件时重新渲染；保存不会影响 office 预阅
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [sel && sel.rel, projectId]);
+        void load(path);
+      }, [path, load]);
 
       useEffect(() => {
-        let alive = true;
-        setExpanded(new Set());
-        setNodes({});
-        setSel(null);
-        setDraft('');
-        setDirty(false);
-        (async () => {
-          const value = await loadDir('');
-          if (!alive) return;
-          if (project.lastRel) {
-            const top = String(project.lastRel).split('/')[0];
-            if (top && value && (value.entries || []).some((entry) => entry.name === top && entry.dir)) {
-              setExpanded((prev) => new Set(prev).add(top));
-            }
-            openFile(project.lastRel, true).catch(() => {});
-          }
-        })();
-        return () => {
-          alive = false;
-        };
-        // 只在切换项目时重建
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [projectId]);
+        writePref('dafeiyu.view.autosave', autoSave);
+      }, [autoSave]);
 
-      const toggleDir = useCallback((entry) => {
-        setExpanded((prev) => {
-          const next = new Set(prev);
-          if (next.has(entry.rel)) next.delete(entry.rel);
-          else {
-            next.add(entry.rel);
-            if (!nodes[entry.rel] || !nodes[entry.rel].entries) loadDir(entry.rel);
-          }
-          return next;
-        });
-      }, [loadDir, nodes]);
+      const dirty = Boolean(info) && draft !== savedText;
 
       const save = useCallback(async (options) => {
-        const current = selRef.current;
-        if (!current || !current.info.editable) return;
-        const quiet = Boolean(options && options.silent);
+        if (!info || !dirty) return;
         setSaving(true);
         try {
           const value = await post('/file/save', {
-            projectId,
-            path: current.rel,
+            sceneId: scene.id,
+            panelId: panel.id,
+            path: info.path,
             text: draft,
-            baseMtimeMs: current.info.mtimeMs
+            baseMtimeMs: mtimeMs
           });
-          setSel((prev) => (prev ? { ...prev, info: { ...prev.info, mtimeMs: value.mtimeMs, size: value.size, text: draft } } : prev));
-          setDirty(false);
-          if (!quiet) say('已保存 ' + current.info.name);
-          loadDir(parentOf(current.rel));
-        } catch (error) {
-          if (error.code === 'CONFLICT') say('文件已被其它程序改动，请先点「重新读取」', 'error');
-          else say('保存失败：' + msg(error), 'error');
+          setMtimeMs(value.mtimeMs);
+          setSavedText(draft);
+          if (!(options && options.silent)) say('已保存', 'ok');
+        } catch (err) {
+          say(msg(err), 'error');
         } finally {
           setSaving(false);
         }
-      }, [draft, loadDir, projectId, say]);
-
-      /* 改完停手 1.2 秒自动落盘；有冲突会照常弹提示，不会静默丢字 */
-      useEffect(() => {
-        try {
-          localStorage.setItem('dafeiyu.autosave', autoSave ? 'on' : 'off');
-        } catch {
-          /* 隐私模式下写不了，忽略 */
-        }
-      }, [autoSave]);
+      }, [info, dirty, draft, mtimeMs, scene.id, panel.id, say]);
 
       useEffect(() => {
-        if (!autoSave || !dirty || saving) return undefined;
-        const current = selRef.current;
-        if (!current || !current.info.editable) return undefined;
-        const timer = setTimeout(() => {
-          save({ silent: true });
-        }, 1200);
+        if (!autoSave || !dirty || saving || !info || info.kind !== 'text') return undefined;
+        const timer = setTimeout(() => { void save({ silent: true }); }, 1200);
         return () => clearTimeout(timer);
-      }, [autoSave, dirty, saving, draft, save]);
+      }, [autoSave, dirty, saving, draft, info, save]);
 
-      const askAiRewrite = useCallback(async (mode) => {
-        const current = selRef.current;
-        if (!current || !current.info.editable) return;
-        const node = editorRef.current;
-        let picked = '';
-        try {
-          if (node && typeof node.selectionStart === 'number' && node.selectionEnd > node.selectionStart) {
-            picked = String(draft || '').slice(node.selectionStart, node.selectionEnd);
-          }
-        } catch {
-          picked = '';
-        }
-        const body = (picked && picked.trim() ? picked : String(draft || '')).trim();
-        if (!body) {
-          say('这个文件没有内容可改', 'error');
-          return;
-        }
-        const goal = mode === 'tighten'
-          ? '精简压缩：去掉重复和口水话，保留全部结论、数字、条款。'
-          : mode === 'struct'
-            ? '重排结构：调整段落顺序与层级，让结论在前，保留全部信息与数字。'
-            : '润色文字：改措辞与节奏，保持原意，数字、条款、专有名词一律不动。';
-        const prompt = [
-          '【大肥鱼 · 文档改造请求】',
-          '项目：' + project.name,
-          '文件：' + current.rel,
-          '范围：' + (picked && picked.trim() ? '只改下面这段选中内容' : '整篇'),
-          '要求：' + goal,
-          '',
-          '原文开始 >>>',
-          body.slice(0, 12000),
-          '<<< 原文结束',
-          '',
-          '请把改好的版本写回这个文件（可直接覆盖原文件），改完用一句话说明改了哪里。'
-        ].join('\n');
-        setAiBusy(mode);
-        try {
-          await post('/chat/send', { projectId, text: prompt });
-          say('已发给主智能体，改完看右侧对话或点「重新读取」');
-        } catch (error) {
-          say('发送失败：' + msg(error), 'error');
-        } finally {
-          setAiBusy('');
-        }
-      }, [draft, project.name, projectId, say]);
+      if (!path) {
+        return h('section', { className: 'pm-pane pm-pane-view' },
+          h('header', { className: 'pm-pane-head' }, h('div', { className: 'pm-pane-title' }, h('span', { className: 'pm-pane-dot is-view' }), h('span', null, panel.title || '预览'))),
+          h(Empty, { title: '还没选文件', hint: '左边文件树点一个文件，这里就地看 / 改' }));
+      }
 
-      const openExternal = useCallback(async (rel) => {
-        try {
-          await post('/open', { projectId, path: rel || '' });
-        } catch (error) {
-          say('打开失败：' + msg(error), 'error');
-        }
-      }, [projectId, say]);
+      if (loading && !info) {
+        return h('section', { className: 'pm-pane pm-pane-view' }, h('div', { className: 'pm-view-loading' }, h(Spinner, null)));
+      }
 
-      const runBrief = useCallback(async () => {
-        setBusyBrief(true);
-        try {
-          const value = await post('/brief', { projectId });
-          say('已生成协作档案：' + value.files.length + ' 个文件（_pm/）');
-          await loadDir('');
-          setExpanded((prev) => new Set(prev).add('_pm'));
-          await loadDir('_pm');
-        } catch (error) {
-          say('生成失败：' + msg(error), 'error');
-        } finally {
-          setBusyBrief(false);
-        }
-      }, [loadDir, projectId, say]);
+      const head = h('header', { className: 'pm-pane-head' },
+        h('div', { className: 'pm-pane-title' },
+          h('span', { className: 'pm-pane-dot is-view' }),
+          h('span', { className: 'pm-pane-title-text', title: path }, info ? info.name : path),
+          info ? h('span', { className: 'pm-pane-hint' }, `${kindLabel(info.kind)} · ${fmtSize(info.size)}`) : null),
+        h('div', { className: 'pm-pane-actions' },
+          info && info.kind === 'text' ? h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setPreview(!preview) }, preview ? '改' : '看') : null,
+          info && info.kind === 'text' ? h('button', { type: 'button', className: cx('pm-btn is-mini', autoSave && 'is-primary'), onClick: () => setAutoSave(!autoSave) }, autoSave ? '自动保存' : '手动保存') : null,
+          info && info.kind === 'text' ? h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !dirty || saving, onClick: () => void save() }, saving ? '保存中…' : dirty ? '保存' : '已保存') : null,
+          h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => void load(path) }, '重新读取'),
+          h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => post('/open', { sceneId: scene.id, panelId: panel.id, path }).catch((err) => say(msg(err), 'error')) }, '外部打开')));
 
-      const openLead = useCallback(async () => {
-        const uiWorkspace = svc(get, 'uiWorkspace');
-        if (!uiWorkspace) throw new Error('界面导航服务不可用（uiWorkspace）');
-        if (project.leadSessionId) {
-          uiWorkspace.openSession(project.leadSessionId);
-          say('已切换到主智能体会话');
-          return;
-        }
-        let workspaceId = project.workspaceId;
-        if (!workspaceId) workspaceId = findWorkspace(get, project.root);
-        if (!workspaceId) {
-          const workspaces = svc(get, 'workspaces');
-          if (!workspaces) throw new Error('工作区服务不可用（workspaces）');
-          const view = await workspaces.create({ path: project.root });
-          workspaceId = view && (view.workspaceId || (view.workspace && view.workspace.workspaceId)) || null;
-          if (!workspaceId) throw new Error('创建工作区失败：' + JSON.stringify(view || null));
-        }
-        if (workspaceId !== project.workspaceId) patch({ workspaceId });
-        const sessionId = await uiWorkspace.connectWorkspace(workspaceId);
-        if (sessionId) {
-          patch({ leadSessionId: sessionId });
-          try {
-            uiWorkspace.openSession(sessionId);
-          } catch {
-            /* 导航失败不阻塞绑定 */
-          }
-          say('已创建主智能体会话');
-        } else {
-          uiWorkspace.openWorkspace(workspaceId);
-          say('已打开项目工作区');
-        }
-      }, [get, patch, project.leadSessionId, project.root, project.workspaceId, say]);
-
-      const launchText = () => {
-        const modules = (project.modules || []).filter((item) => item.enabled !== false);
-        const lines = [];
-        lines.push('你是「' + project.name + '」项目的主智能体，负责统筹本项目的全部文档工作。');
-        lines.push('');
-        lines.push('项目根目录：' + project.root);
-        lines.push('');
-        lines.push('## 一、先读项目档案');
-        lines.push('1. `_pm/项目档案.md`（项目全貌与子智能体名册）');
-        lines.push('2. `_pm/任务看板.md`（当前任务状态）');
-        lines.push('');
-        lines.push('## 二、按模块派发子智能体（一个模块一个子智能体）');
-        if (modules.length === 0) {
-    lines.push('（尚未配置模块：请先在「大肥鱼」里添加子智能体模块）');
-        } else {
-          modules.forEach((item, index) => {
-            lines.push(
-              (index + 1) + '. **' + item.name + '** — 简报 `_pm/模块/' + slugify(item.name) + '.md`' +
-              (item.role ? '；职责：' + item.role : '') +
-              (item.deliverables ? '；交付：' + item.deliverables : '')
-            );
-          });
-        }
-        lines.push('');
-        lines.push('## 三、派发方式');
-        lines.push('1. 用子智能体能力派发（每模块一个子智能体、各自独立会话），也可以交给 Agent Teams 建任务。');
-        lines.push('2. 每次派单都要写清：模块简报路径、职责、交付物、边界，并要求子智能体先读简报再动手。');
-        lines.push('3. 多个模块可并行推进；你负责汇总、校验、统一口径，必要时自己动笔改写。');
-        lines.push('');
-        lines.push('## 四、汇报与交付');
-        lines.push('1. 每轮结束更新 `_pm/任务看板.md`，并向我汇报：完成项、产出文件路径、待确认事项。');
-        lines.push('2. 正式提交件：技术方案用 Markdown 并转 PDF，汇报用 PPT，数据用 Excel。');
-        lines.push('3. 需要调整模块分工或新增模块时先问我；确认后由我在大肥鱼里更新名册与简报。');
-        return lines.join('\n');
-      };
-
-      const copyLaunch = useCallback(async () => {
-        const ok = await copyText(launchText());
-        say(ok ? '启动指令已复制，粘贴到主智能体会话即可' : '复制失败，请手动选择文本', ok ? 'ok' : 'error');
-      }, [project.modules, project.name, project.root, say]);
-
-      const copyModule = useCallback(async (item) => {
-        const lines = [
-          '你是「' + project.name + '」项目的子智能体，负责「' + item.name + '」模块。',
-          '',
-          '项目根目录：' + project.root,
-          '模块简报：_pm/模块/' + slugify(item.name) + '.md',
-          item.role ? '职责：' + item.role : '',
-          item.deliverables ? '交付物：' + item.deliverables : '',
-          item.instructions ? '补充要求：' + item.instructions : '',
-          '',
-          '要求：只处理本模块范围；产出写回项目目录；完成后用三行汇报（做了什么 / 文件路径 / 需要谁配合）。'
-        ].filter(Boolean);
-        const ok = await copyText(lines.join('\n'));
-        say(ok ? '「' + item.name + '」派单指令已复制' : '复制失败', ok ? 'ok' : 'error');
-      }, [project.modules, project.name, project.root, say]);
-
-      const commitRename = () => {
-        const next = String(renaming || '').trim();
-        setRenaming(null);
-        if (next && next !== project.name) patch({ name: next });
-      };
-
-      const removeProject = async () => {
-        if (!(await props.ask('从大肥鱼移除「' + project.name + '」？本地文件不会被删除。'))) return;
-        props.onDelete(project);
-      };
-
-      const onTreeEntry = (entry, depth) => {
-        if (entry.dir) toggleDir(entry);
-        else openFile(entry.rel);
-      };
-
-      const renderTree = (rel, depth) => {
-        const node = nodes[rel];
-        if (!node) return null;
-        if (node.loading && !node.entries) {
-          return h('div', { className: 'pm-hint' }, h(Spinner), ' 载入中…');
-        }
-        if (node.error) return h('div', { className: 'pm-hint is-error' }, node.error);
-        return (node.entries || []).map((entry) => {
-          const badge = badgeOf(entry);
-          const isOpen = expanded.has(entry.rel);
-          const isActive = sel && sel.rel === entry.rel;
-          return h(
-            React.Fragment,
-            { key: entry.rel },
-            h('button', {
-              className: cx('pm-tree-row', entry.dir ? 'is-dir' : '', isActive ? 'is-active' : ''),
-              style: { paddingLeft: (6 + depth * 12) + 'px' },
-              title: entry.rel,
-              onClick: () => onTreeEntry(entry, depth)
-            },
-              h('span', { className: 'pm-caret' }, entry.dir ? (isOpen ? '▾' : '▸') : ''),
-              h('span', { className: 'pm-badge ' + badge.tone }, badge.text),
-              h('span', { className: 'pm-tree-name' }, entry.name)),
-            entry.dir && isOpen ? renderTree(entry.rel, depth + 1) : null
-          );
-        });
-      };
-
-      const stats = project.stats || {};
-
-      const agentProps = {
-        project,
-        presets: props.presets,
-        get,
-        say,
-        patch,
-        briefBusy: busyBrief,
-        onBrief: runBrief,
-        onCopyLaunch: copyLaunch,
-        onCopyModule: copyModule,
-        onOpenLead: openLead,
-        onRebind: async () => {
-          if (await props.ask('解除当前会话绑定并新建一个主智能体会话？')) {
-            patch({ leadSessionId: null });
-            say('已解除绑定，再点「新建主智能体会话」即可');
-          }
-        }
-      };
-
-      return h(
-        'div',
-        {
-          className: 'pm-main',
-          style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, gap: 10 }
-        },
-
-        /* 头部 */
-        h('header', { className: 'pm-head' },
-          h('div', { className: 'pm-head-main' },
-            h('div', { className: 'pm-head-title-row' },
-              renaming !== null
-                ? h('input', {
-                  className: 'pm-input pm-input-title',
-                  value: renaming,
-                  autoFocus: true,
-                  onChange: (event) => setRenaming(event.target.value),
-                  onBlur: commitRename,
-                  onKeyDown: (event) => {
-                    if (event.key === 'Enter') commitRename();
-                    if (event.key === 'Escape') setRenaming(null);
-                  }
-                })
-                : h('button', {
-                  className: 'pm-title',
-                  title: '点击重命名',
-                  onClick: () => setRenaming(project.name)
-                }, project.name),
-              h('span', { className: cx('pm-pill', stats.exists === false ? 'is-warn' : 'is-ok') },
-                stats.exists === false ? '目录不存在' : '本地目录')),
-            h('button', {
-              className: 'pm-path',
-              title: '点击复制路径',
-              onClick: async () => {
-                const ok = await copyText(project.root);
-                say(ok ? '路径已复制' : '复制失败', ok ? 'ok' : 'error');
-              }
-            }, project.root),
-            h('div', { className: 'pm-head-stats' },
-              h('span', null, '文档 ' + (stats.doc || 0)),
-              h('span', null, 'PPT ' + (stats.ppt || 0)),
-              h('span', null, '表格 ' + (stats.xls || 0)),
-              h('span', null, 'PDF ' + (stats.pdf || 0)),
-              h('span', null, '共 ' + (stats.files || 0) + ' 个文件')))
-          ,
-          h('div', { className: 'pm-head-actions' },
-            h('select', {
-              className: 'pm-input pm-layout-select',
-              title: '布局：三栏，或者用场景模板（scenarios/*.json）',
-              value: sceneId,
-              onChange: (event) => switchLayout(event.target.value)
-            },
-              h('option', { value: '' }, '三栏布局'),
-              scenarios.map((item) => h('option', { key: item.id, value: item.id }, item.name || item.id))),
-            h('button', {
-              className: 'pm-btn is-ghost',
-              title: '重新读取 scenarios 目录里的场景文件（插件包 + 数据目录）',
-              onClick: () => { if (props.onRefreshScenarios) props.onRefreshScenarios(); }
-            }, '⟳ 场景'),
-            scene ? null : h('button', {
-              className: cx('pm-btn', showFiles ? 'is-ghost' : 'is-primary'),
-              title: '折叠 / 展开左侧文件树，给文档腾地方',
-              onClick: () => togglePane('files')
-            }, showFiles ? '收起文件树' : '展开文件树'),
-            scene ? null : h('button', {
-              className: cx('pm-btn', showAgent ? 'is-ghost' : 'is-primary'),
-              title: '折叠 / 展开右侧智能体栏',
-              onClick: () => togglePane('agent')
-            }, showAgent ? '收起 AI 栏' : '展开 AI 栏'),
-            scene ? null : h('button', {
-              className: cx('pm-btn', (!showFiles && !showAgent) ? 'is-primary' : ''),
-              title: '只留文档，屏幕再小也能看全',
-              onClick: toggleFocus
-            }, '专注'),
-            h('button', { className: 'pm-btn', onClick: () => openExternal(''), title: '在资源管理器中打开项目目录' }, '打开文件夹'),
-            h('button', {
-              className: 'pm-btn',
-              onClick: () => setNotesOpen(!notesOpen),
-              title: '项目说明会写进协作档案'
-            }, '说明'),
-            h('button', { className: 'pm-btn is-danger', onClick: removeProject, title: '从大肥鱼移除（不删文件）' }, '移除'))),
-
-        notesOpen
-          ? h('div', { className: 'pm-notes' },
+      let body = null;
+      if (info && info.kind === 'text') {
+        body = preview
+          ? h('div', { className: 'pm-view-md' }, renderMarkdown(draft))
+          : h('div', { className: 'pm-view-text' },
             h('textarea', {
-              className: 'pm-input pm-input-multi',
-              rows: 3,
-              value: notesDraft,
-              placeholder: '项目背景、干系人、里程碑……写在这里会进入 _pm/项目档案.md',
-              onChange: (event) => setNotesDraft(event.target.value)
-            }),
-            h('div', { className: 'pm-actions' },
-              h('button', {
-                className: 'pm-btn is-primary',
-                onClick: () => {
-                  patch({ notes: notesDraft });
-                  setNotesOpen(false);
-                  say('项目说明已保存');
+              className: 'pm-view-textarea',
+              ref: editorRef,
+              value: draft,
+              spellCheck: false,
+              onChange: (event) => setDraft(event.target.value),
+              onKeyDown: (event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+                  event.preventDefault();
+                  void save();
                 }
-              }, '保存'),
-              h('button', { className: 'pm-btn is-ghost', onClick: () => setNotesOpen(false) }, '取消')))
-          : null,
+              }
+            }),
+            h('div', { className: 'pm-view-foot' }, dirty ? (autoSave ? '● 未保存（停手即存）' : '● 未保存') : '已保存',
+              mtimeMs ? h('span', { className: 'pm-view-foot-time' }, ` · ${fmtTime(mtimeMs)}`) : null));
+      } else if (info && info.kind === 'image') {
+        body = h('div', { className: 'pm-view-image' }, h('img', { alt: info.name, src: `${API}/raw?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}&path=${encodeURIComponent(path)}` }));
+      } else if (info && info.kind === 'pdf') {
+        body = h('iframe', { className: 'pm-view-pdf', title: info.name, src: `${API}/raw?sceneId=${encodeURIComponent(scene.id)}&panelId=${encodeURIComponent(panel.id)}&path=${encodeURIComponent(path)}` });
+      } else if (info && info.kind === 'office') {
+        body = h(OfficePreview, { scene, panel, path, say });
+      } else if (info) {
+        body = h(Empty, { title: '这种文件不内嵌', hint: `${info.name}（${fmtSize(info.size)}） · 可以「外部打开」` });
+      }
 
-        /* 三栏（文件树 / 编辑预览 / 智能体栏，可各自折叠）或场景网格 */
-        h('div', {
-          className: cx('pm-body', scene ? 'pm-scene' : '',
-            !scene && !showFiles ? 'no-files' : '', !scene && !showAgent ? 'no-agent' : ''),
-          style: scene
-            ? {
-              display: 'grid',
-              gridTemplateColumns: 'repeat(' + scene.cols + ', minmax(0, 1fr))',
-              gridTemplateRows: 'repeat(' + scene.rows + ', minmax(0, 1fr))',
-              gap: '8px'
-            }
-            : null
-        },
-
-          /* 文件树 */
-          (scene ? Boolean(scenePanel('file')) : showFiles)
-            ? h('section', { className: 'pm-pane pm-files', style: sceneStyle('file') },
-              sceneTag('file'),
-            h('div', { className: 'pm-pane-head' },
-              h('span', { className: 'pm-pane-title' }, '本地文件'),
-              h('div', { className: 'pm-pane-tools' },
-                h('button', { className: 'pm-btn is-ghost', title: '刷新文件树', onClick: () => loadDir('') }, '刷新'),
-                h('button', { className: 'pm-btn is-ghost', title: '在资源管理器中打开', onClick: () => openExternal('') }, '↗'))),
-            h('div', { className: 'pm-pane-body pm-tree' }, renderTree('', 0)),
-            h('div', { className: 'pm-pane-foot' }, nodes[''] && nodes[''].entries ? nodes[''].entries.length + ' 项' : ''))
-            : null,
-
-          /* 编辑器 / 预览 */
-          h('section', { className: 'pm-pane pm-editor', style: sceneStyle('view') },
-            sceneTag('view'),
-            h('div', { className: 'pm-pane-head' },
-              h('span', { className: 'pm-pane-title pm-editor-name', title: sel ? sel.rel : '' },
-                sel ? sel.info.name : '未选择文件'),
-              h('div', { className: 'pm-pane-tools' },
-                sel && sel.info.editable
-                  ? h('button', {
-                    className: cx('pm-btn', dirty ? 'is-primary' : ''),
-                    onClick: () => save(),
-                    disabled: saving || !dirty,
-                    title: 'Ctrl+S'
-                  }, saving ? h(Spinner) : null, dirty ? '保存' : '已保存')
-                  : null,
-                sel && sel.info.editable
-                  ? h('button', {
-                    className: cx('pm-btn', autoSave ? 'is-primary' : 'is-ghost'),
-                    title: autoSave ? '改完会自动保存；点一下改成手动保存' : '现在是手动保存（Ctrl+S）；点一下开启自动保存',
-                    onClick: () => {
-                      setAutoSave(!autoSave);
-                      say(autoSave ? '自动保存已关闭' : '自动保存已开启');
-                    }
-                  }, autoSave ? '自动保存' : '手动保存')
-                  : null,
-                sel && sel.info.editable && /\.(md|markdown)$/i.test(sel.rel)
-                  ? h('button', { className: cx('pm-btn', preview ? 'is-primary' : 'is-ghost'), onClick: () => setPreview(!preview) },
-                    preview ? '编辑' : '预览')
-                  : null,
-                sel && sel.info.kind === 'text'
-                  ? h('button', {
-                    className: 'pm-btn is-ghost',
-                    title: '选中一段再点这里让主智能体改写；没选中就改整篇',
-                    disabled: Boolean(aiBusy),
-                    onClick: () => askAiRewrite('polish')
-                  }, aiBusy === 'polish' ? h(Spinner) : null, 'AI 润色')
-                  : null,
-                sel && sel.info.kind === 'text'
-                  ? h('button', {
-                    className: 'pm-btn is-ghost',
-                    title: '让主智能体把这段（或整篇）压缩得更紧',
-                    disabled: Boolean(aiBusy),
-                    onClick: () => askAiRewrite('tighten')
-                  }, aiBusy === 'tighten' ? h(Spinner) : null, 'AI 精简')
-                  : null,
-                sel ? h('button', {
-                  className: 'pm-btn is-ghost',
-                  title: '重新读取（放弃本地修改）',
-                  onClick: () => openFile(sel.rel, true)
-                }, '重新读取') : null,
-                sel && sel.info.kind === 'office' ? h('button', {
-                  className: 'pm-btn is-ghost',
-                  title: '重新渲染文档预览',
-                  disabled: Boolean(doc && doc.status === 'loading'),
-                  onClick: () => loadDoc(sel.rel, true)
-                }, doc && doc.status === 'loading' ? '渲染中…' : '重新生成') : null,
-                sel ? h('button', {
-                  className: 'pm-btn is-ghost',
-                  title: '用系统默认程序打开（Word / Excel / PPT / PDF 阅读器）',
-                  onClick: () => openExternal(sel.rel)
-                }, '外部打开') : null,
-                sel ? h('button', { className: 'pm-btn is-ghost', onClick: () => { setSel(null); setDraft(''); setDirty(false); } }, '关闭') : null)),
-
-            h('div', { className: 'pm-editor-body' },
-              !sel
-                ? h('div', { className: 'pm-empty' },
-                  h('p', { className: 'pm-empty-title' }, '左侧选一个文件'),
-                  h('p', { className: 'pm-muted' }, '文本 / 代码 / Markdown 直接在这里编辑；'),
-                  h('p', { className: 'pm-muted' }, 'docx、xlsx、pptx 与 PDF 会内嵌预览，改文档再用「外部打开」。'))
-                : sel.info.kind === 'text'
-                  ? (preview
-                    ? h('div', { className: 'pm-preview' }, renderMarkdown(draft))
-                    : h('textarea', {
-                      className: 'pm-textarea',
-                      ref: editorRef,
-                      value: draft,
-                      spellCheck: false,
-                      onChange: (event) => {
-                        setDraft(event.target.value);
-                        setDirty(event.target.value !== (sel.info.text || ''));
-                      },
-                      onKeyDown: (event) => {
-                        if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
-                          event.preventDefault();
-                          save();
-                        }
-                      }
-                    }))
-                  : sel.info.kind === 'image'
-                    ? h('div', { className: 'pm-image-wrap' },
-                      h('img', {
-                        className: 'pm-image',
-                        alt: sel.info.name,
-                        src: API + '/raw?' + new URLSearchParams({ projectId, path: sel.rel }).toString()
-                      }))
-                    : sel.info.kind === 'pdf'
-                      ? h('div', { className: 'pm-pdf-wrap' },
-                        h('iframe', {
-                          className: 'pm-pdf',
-                          title: sel.info.name,
-                          src: API + '/raw?' + new URLSearchParams({ projectId, path: sel.rel }).toString()
-                        }))
-                      : sel.info.kind === 'office'
-                        ? h(DocPreview, {
-                          projectId,
-                          rel: sel.rel,
-                          info: sel.info,
-                          doc,
-                          onRetry: () => loadDoc(sel.rel, true),
-                          onOpenExternal: () => openExternal(sel.rel)
-                        })
-                        : h('div', { className: 'pm-empty' },
-                          h('p', { className: 'pm-empty-title' }, sel.info.name),
-                          h('p', { className: 'pm-muted' }, '这类文件不支持内嵌预览，可用系统程序打开。'),
-                          h('p', { className: 'pm-muted' }, fmtSize(sel.info.size) + ' · ' + fmtTime(sel.info.mtimeMs)),
-                          h('button', { className: 'pm-btn is-primary', onClick: () => openExternal(sel.rel) }, '用系统程序打开'))),
-
-            sel
-              ? h('div', { className: 'pm-editor-foot' },
-                h('span', null, fmtSize(sel.info.size)),
-                h('span', null, fmtTime(sel.info.mtimeMs)),
-                sel.info.editable
-                  ? h('span', null, draft.split('\n').length + ' 行')
-                  : h('span', null, '只读预览'),
-                dirty ? h('span', { className: 'pm-dirty' }, autoSave ? '● 未保存（停手即自动保存）' : '● 未保存') : null)
-              : null),
-
-          /* 智能体 */
-          (scene ? Boolean(scenePanel('harness')) : showAgent)
-            ? (scene
-              ? h('section', { className: 'pm-pane pm-scene-agent', style: sceneStyle('harness') },
-                sceneTag('harness'),
-                h(AgentPane, agentProps))
-              : h(AgentPane, agentProps))
-            : null,
-
-          /* 场景保留位 */
-          scene && scenePanel('reserved')
-            ? h('section', { className: 'pm-pane pm-reserved', style: sceneStyle('reserved') },
-              sceneTag('reserved'),
-              h('div', { className: 'pm-reserved-body' },
-                h('p', { className: 'pm-reserved-title' }, '保留位'),
-                h('p', { className: 'pm-muted' }, '这里是「工具位」，现在是占位卡。想换成网页 / 清单 / 图表，改 scenarios 里这块的 type 就行。'),
-                h('p', { className: 'pm-muted' }, '当前场景：' + (scene.name || scene.id) + ' · 来源 ' + (scene.source === 'data' ? '数据目录' : '插件包'))))
-            : null
-        )
-      );
+      return h('section', { className: 'pm-pane pm-pane-view' }, head, body);
     }
 
-    /* ------------------------------ 版本模块 */
+    /* ------------------------------------------------------------- 网页面板 */
 
-    const VERSION_KIND_LABEL = {
-      manual: '手动备份',
-      startup: '启动自动备份',
-      rollback: '回滚记录',
-      'pre-rollback': '回滚前自动备份',
-      auto: '自动'
-    };
+    function WebPanel(props) {
+      const { panel, say } = props;
+      const url = panel.url || '';
+      const [zoom, setZoom] = useState(1);
+      const [reloadKey, setReloadKey] = useState(0);
+      const [blocked, setBlocked] = useState(false);
+      const [loaded, setLoaded] = useState(false);
 
-    function VersionsPane(props) {
-      const say = props.say;
+      useEffect(() => {
+        if (!url) return undefined;
+        setBlocked(false);
+        setLoaded(false);
+        const timer = setTimeout(() => {
+          setBlocked((prev) => (prev || loaded ? prev : true));
+        }, 8000);
+        return () => clearTimeout(timer);
+      }, [url, reloadKey, loaded]);
+
+      return h('section', { className: 'pm-pane pm-pane-web' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' }, h('span', { className: 'pm-pane-dot is-web' }), h('span', null, panel.title || '网页')),
+          h('div', { className: 'pm-pane-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setZoom(Math.max(0.6, Number((zoom - 0.1).toFixed(2)))) }, '−'),
+            h('span', { className: 'pm-zoom-label' }, `${Math.round(zoom * 100)}%`),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setZoom(Math.min(1.8, Number((zoom + 0.1).toFixed(2)))) }, '＋'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setReloadKey(reloadKey + 1) }, '刷新'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => post('/openlink', { url }).catch((err) => say(msg(err), 'error')) }, '浏览器'))),
+        !url ? h(Empty, { title: '这块没填网址', hint: '编辑场景 JSON，给这块加上 url' }) : null,
+        url && blocked && !loaded
+          ? h('div', { className: 'pm-blocked' },
+            h('div', { className: 'pm-blocked-title' }, '这个网站不让嵌在面板里'),
+            h('div', { className: 'pm-blocked-text' }, '多半是对方设了 X-Frame-Options / CSP。可以用系统浏览器打开，登录态还在。'),
+            h('div', { className: 'pm-blocked-actions' },
+              h('button', { type: 'button', className: 'pm-btn is-mini is-primary', onClick: () => post('/openlink', { url }).catch((err) => say(msg(err), 'error')) }, '用系统浏览器打开'),
+              h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setReloadKey(reloadKey + 1) }, '再试一次')))
+          : null,
+        url ? h('div', { className: 'pm-web-wrap' },
+          h('iframe', {
+            key: reloadKey,
+            className: 'pm-web-frame',
+            title: panel.title || '网页',
+            src: url,
+            referrerPolicy: 'no-referrer',
+            allow: 'clipboard-read; clipboard-write; fullscreen',
+            style: { width: `${100 / zoom}%`, height: `${100 / zoom}%`, transform: `scale(${zoom})` },
+            onLoad: () => setLoaded(true)
+          })) : null);
+    }
+
+    /* ----------------------------------------------------- 定位卡 / 场景记忆 */
+
+    function NotePanel(props) {
+      const { scene, panel, say } = props;
+      const source = panel.source === 'context' ? 'context' : 'memory';
+      const [text, setText] = useState('');
+      const [saved, setSaved] = useState('');
+      const [loading, setLoading] = useState(true);
+      const [busy, setBusy] = useState(false);
+
+      const load = useCallback(async () => {
+        setLoading(true);
+        try {
+          const value = await get(`/scene/notes?id=${encodeURIComponent(scene.id)}`);
+          const next = source === 'context' ? value.context : value.memory;
+          setText(next || '');
+          setSaved(next || '');
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setLoading(false);
+        }
+      }, [scene.id, source, say]);
+
+      useEffect(() => { void load(); }, [load]);
+
+      const save = useCallback(async (options) => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          await post('/scene/note', { sceneId: scene.id, source, text });
+          setSaved(text);
+          if (!(options && options.silent)) say('已保存', 'ok');
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setBusy(false);
+        }
+      }, [scene.id, source, text, busy, say]);
+
+      const dirty = text !== saved;
+      useEffect(() => {
+        if (!dirty || loading) return undefined;
+        const timer = setTimeout(() => { void save({ silent: true }); }, 1200);
+        return () => clearTimeout(timer);
+      }, [dirty, loading, text, save]);
+
+      return h('section', { className: 'pm-pane pm-pane-note' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' },
+            h('span', { className: 'pm-pane-dot is-note' }),
+            h('span', null, panel.title || (source === 'context' ? '定位卡' : '场景记忆')),
+            h('span', { className: 'pm-pane-hint' }, dirty ? '未保存' : '已保存')),
+          h('div', { className: 'pm-pane-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => void load() }, '重新读取'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !dirty || busy, onClick: () => void save() }, busy ? '保存中…' : '保存'))),
+        loading ? h('div', { className: 'pm-view-loading' }, h(Spinner, null)) : h('textarea', {
+          className: 'pm-note-textarea',
+          value: text,
+          spellCheck: false,
+          placeholder: source === 'context' ? '写这个场景是干什么的、资产在哪、什么话能触发它' : '§〇 交接 + 长期决策',
+          onChange: (event) => setText(event.target.value)
+        }));
+    }
+
+    function ReservedPanel(props) {
+      const { panel, scene } = props;
+      return h('section', { className: 'pm-pane pm-pane-reserved' },
+        h('header', { className: 'pm-pane-head' },
+          h('div', { className: 'pm-pane-title' }, h('span', { className: 'pm-pane-dot is-reserved' }), h('span', null, panel.title || '预留位'))),
+        h('div', { className: 'pm-reserved-body' },
+          h('div', { className: 'pm-reserved-title' }, '这块留着'),
+          h('div', { className: 'pm-reserved-text' }, panel.sub || '想换成网页 / 清单 / 图表，就编辑场景 JSON 改这块的 type。'),
+          h('div', { className: 'pm-reserved-hint' }, `场景：${scene.name} · 面板 id：${panel.id}`)));
+    }
+
+    /* ------------------------------------------------------------ 场景网格 */
+
+    function SceneGrid(props) {
+      const { scene, selection, onPick, say, sessionState } = props;
+      const cols = Math.max(1, Number(scene.cols) || 1);
+      const rows = Math.max(1, Math.max(...scene.panels.map((item) => (Number(item.row) || 1) + (Number(item.h) || 1) - 1), 1));
+      const styleFor = (panel) => ({
+        gridColumn: `${Number(panel.col) || 1} / span ${Math.max(1, Number(panel.w) || 1)}`,
+        gridRow: `${Number(panel.row) || 1} / span ${Math.max(1, Number(panel.h) || 1)}`
+      });
+      const render = (panel) => {
+        const shared = { key: panel.id, scene, panel, selection, onPick, say, sessionState: sessionState && sessionState[panel.id] };
+        if (panel.type === 'harness') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(HarnessPanel, shared));
+        if (panel.type === 'file') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(FilePanel, shared));
+        if (panel.type === 'view') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(ViewPanel, shared));
+        if (panel.type === 'web') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(WebPanel, shared));
+        if (panel.type === 'note') return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(NotePanel, shared));
+        return h('div', { key: panel.id, className: 'pm-cell', style: styleFor(panel) }, h(ReservedPanel, shared));
+      };
+      if (!scene.panels.length) {
+        return h(Empty, { title: '这个场景还是空白的', hint: '点右上「编辑场景」加几块面板，或者换一个场景' });
+      }
+      return h('div', {
+        className: 'pm-grid',
+        style: {
+          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`
+        }
+      }, scene.panels.map(render));
+    }
+
+    /* ---------------------------------------------------------- 场景 / 版本弹层 */
+
+    function Modal(props) {
+      if (!props.open) return null;
+      return h('div', { className: 'pm-modal', onClick: props.onClose },
+        h('div', { className: cx('pm-modal-card', props.wide && 'is-wide'), onClick: (event) => event.stopPropagation() },
+          h('header', { className: 'pm-modal-head' },
+            h('h3', { className: 'pm-modal-title' }, props.title),
+            h('button', { type: 'button', className: 'pm-modal-close', onClick: props.onClose }, '×')),
+          h('div', { className: 'pm-modal-body' }, props.children),
+          props.footer ? h('footer', { className: 'pm-modal-foot' }, props.footer) : null));
+    }
+
+    function SceneEditor(props) {
+      const { scene, onClose, onSaved, say } = props;
+      const [text, setText] = useState('');
+      const [busy, setBusy] = useState(false);
+
+      useEffect(() => {
+        if (!scene) return;
+        const payload = {
+          id: scene.id,
+          name: scene.name,
+          description: scene.description || '',
+          root: scene.root || '',
+          cols: scene.cols,
+          panels: scene.panels
+        };
+        setText(JSON.stringify(payload, null, 2));
+      }, [scene]);
+
+      const save = async () => {
+        setBusy(true);
+        try {
+          const parsed = JSON.parse(text);
+          const value = await post('/scene/save', { scene: parsed });
+          say('场景已保存', 'ok');
+          onSaved(value.scene);
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return h(Modal, {
+        open: Boolean(scene),
+        title: scene ? `编辑场景 · ${scene.name}` : '编辑场景',
+        wide: true,
+        onClose,
+        footer: [
+          h('button', { key: 'cancel', type: 'button', className: 'pm-btn', onClick: onClose }, '取消'),
+          h('button', { key: 'save', type: 'button', className: 'pm-btn is-primary', disabled: busy, onClick: () => void save() }, busy ? '保存中…' : '保存')
+        ]
+      },
+        h('div', { className: 'pm-form-hint' }, 'JSON 直接改：id / name / description / root / cols / panels（type 支持 harness · file · view · web · note · reserved）'),
+        h('textarea', { className: 'pm-code-textarea', value: text, spellCheck: false, onChange: (event) => setText(event.target.value) }));
+    }
+
+    function NewSceneForm(props) {
+      const { onClose, onCreated, say } = props;
+      const [form, setForm] = useState({ id: '', name: '', root: '', cols: 4, preset: 'doc' });
+      const [busy, setBusy] = useState(false);
+
+      const submit = async () => {
+        const id = (form.id || form.name || '').replace(/[^\w.\-]/g, '-').toLowerCase();
+        if (!id) {
+          say('给场景起个 id（英文或数字）', 'error');
+          return;
+        }
+        setBusy(true);
+        try {
+          const panels = form.preset === 'doc'
+            ? [
+              { id: 'p-doc', title: '文档', type: 'view', col: 1, row: 1, w: 3, h: 3 },
+              { id: 'p-file', title: '文件', type: 'file', col: 4, row: 1, w: 1, h: 3 },
+              { id: 'p-note', title: '场景记忆', type: 'note', source: 'memory', col: 1, row: 4, w: 2, h: 2 },
+              { id: 'p-ai', title: 'AI', type: 'harness', col: 3, row: 4, w: 2, h: 2 }
+            ]
+            : [
+              { id: 'p-file', title: '文件', type: 'file', col: 1, row: 1, w: 1, h: 3 },
+              { id: 'p-ai', title: 'AI', type: 'harness', col: 2, row: 1, w: 2, h: 3 }
+            ];
+          const value = await post('/scene/save', {
+            scene: { id, name: form.name || id, description: '', root: form.root, cols: Number(form.cols) || 4, panels }
+          });
+          say('场景已建好', 'ok');
+          onCreated(value.scene);
+        } catch (err) {
+          say(msg(err), 'error');
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return h(Modal, {
+        open: true,
+        title: '新建场景',
+        onClose,
+        footer: [
+          h('button', { key: 'cancel', type: 'button', className: 'pm-btn', onClick: onClose }, '取消'),
+          h('button', { key: 'ok', type: 'button', className: 'pm-btn is-primary', disabled: busy, onClick: () => void submit() }, busy ? '创建中…' : '创建')
+        ]
+      },
+        h('div', { className: 'pm-form-grid' },
+          h('label', { className: 'pm-field' }, h('span', null, '场景 id'), h('input', { className: 'pm-input', value: form.id, placeholder: '如 logistics-206', onChange: (event) => setForm({ ...form, id: event.target.value }) })),
+          h('label', { className: 'pm-field' }, h('span', null, '场景名称'), h('input', { className: 'pm-input', value: form.name, placeholder: '如 物流商城 206', onChange: (event) => setForm({ ...form, name: event.target.value }) })),
+          h('label', { className: 'pm-field' }, h('span', null, '工作根目录'), h('input', { className: 'pm-input', value: form.root, placeholder: 'D:\\蓝宝\\01_福利商城', onChange: (event) => setForm({ ...form, root: event.target.value }) })),
+          h('label', { className: 'pm-field' }, h('span', null, '列数'), h('input', { className: 'pm-input', type: 'number', min: 1, max: 8, value: form.cols, onChange: (event) => setForm({ ...form, cols: event.target.value }) })),
+          h('label', { className: 'pm-field' }, h('span', null, '初始面板'), h('select', { className: 'pm-input', value: form.preset, onChange: (event) => setForm({ ...form, preset: event.target.value }) },
+            h('option', { value: 'doc' }, '文档 + 文件 + 记忆 + AI（4 列）'),
+            h('option', { value: 'work' }, '文件 + AI（3 列）')))));
+    }
+
+    function VersionPanel(props) {
+      const { onClose, say } = props;
       const [info, setInfo] = useState(null);
-      const [error, setError] = useState('');
-      const [busy, setBusy] = useState('');
-      const [repoDraft, setRepoDraft] = useState('');
+      const [repo, setRepo] = useState('');
+      const [busy, setBusy] = useState(false);
 
       const load = useCallback(async () => {
         try {
-          const value = await call('/version');
+          const value = await get('/version');
           setInfo(value);
-          setError('');
-          setRepoDraft(String(value.repositoryUrl || (value.repository && value.repository.url) || ''));
+          setRepo(value.repositoryUrl || (value.repository && value.repository.url) || '');
         } catch (err) {
-          setError('读取版本信息失败：' + msg(err));
+          say(msg(err), 'error');
         }
-      }, []);
+      }, [say]);
 
-      useEffect(() => {
-        load();
-      }, [load]);
+      useEffect(() => { void load(); }, [load]);
 
-      const saveRepo = useCallback(async (nextUrl) => {
-        setBusy('repo');
+      const saveRepo = async () => {
+        setBusy(true);
         try {
-          const value = await post('/version/repository', { url: nextUrl === undefined ? repoDraft.trim() : nextUrl });
-          setRepoDraft(value.repositoryUrl || '');
-          say(value.repositoryUrl ? '仓库地址已保存，正在读提交记录' : '已清空仓库地址');
+          await post('/version/repository', { url: repo.trim() });
+          say('仓库地址已保存', 'ok');
           await load();
         } catch (err) {
-          say('保存仓库地址失败：' + msg(err), 'error');
+          say(msg(err), 'error');
         } finally {
-          setBusy('');
+          setBusy(false);
         }
-      }, [load, repoDraft, say]);
+      };
 
-      const backup = useCallback(async () => {
-        setBusy('backup');
+      const snapshot = async () => {
+        setBusy(true);
         try {
-          await post('/version/snapshot', { note: '手动备份' });
-          say('已把当前版本存成一份快照');
+          await post('/version/snapshot', { note: '手动留档' });
+          say('已留档', 'ok');
           await load();
         } catch (err) {
-          say('备份失败：' + msg(err), 'error');
+          say(msg(err), 'error');
         } finally {
-          setBusy('');
+          setBusy(false);
         }
-      }, [load, say]);
+      };
 
-      const rollback = useCallback(async (entry) => {
-        const ok = await props.ask('回滚到 ' + entry.id + '？\n当前插件代码会被覆盖，回滚前会自动把现在这版再备份一份。回滚后按 Ctrl+R 刷新界面生效（Host 侧改动需要重启 DSH）。');
-        if (!ok) return;
-        setBusy(entry.id);
+      const rollback = async (id) => {
+        if (!window.confirm(`回滚到 ${id}？会先给当前版本留档，然后覆盖插件文件，之后 Ctrl+R 刷新。`)) return;
+        setBusy(true);
         try {
-          const value = await post('/version/rollback', { id: entry.id });
-          say('已回滚到 ' + value.restored.version + '，按 Ctrl+R 生效');
+          const value = await post('/version/rollback', { id });
+          say(`已回滚到 ${value.current}，Ctrl+R 刷新面板`, 'ok');
           await load();
         } catch (err) {
-          say('回滚失败：' + msg(err), 'error');
+          say(msg(err), 'error');
         } finally {
-          setBusy('');
+          setBusy(false);
         }
-      }, [load, props, say]);
+      };
 
-      if (error) {
-        return h('div', { className: 'pm-main', style: { flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0 } },
-          h('div', { className: 'pm-empty' },
-            h('p', { className: 'pm-empty-title' }, '读不到版本信息'),
-            h('p', { className: 'pm-muted' }, error),
-            h('div', { className: 'pm-empty-actions' },
-              h('button', { className: 'pm-btn is-primary', onClick: load }, '重试'))));
-      }
-
-      if (!info) {
-        return h('div', { className: 'pm-main', style: { flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0 } },
-          h('div', { className: 'pm-empty' }, h(Spinner), h('p', { className: 'pm-muted' }, '读取版本信息…')));
-      }
-
-      const history = Array.isArray(info.history) ? info.history : [];
-      const changelog = Array.isArray(info.changelog) ? info.changelog : [];
-      const commits = info.commits || null;
-
-      return h('div', {
-        className: 'pm-main pm-version',
-        style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, gap: 10 }
+      const commits = (info && info.commits) || null;
+      return h(Modal, {
+        open: true,
+        title: '版本与仓库',
+        wide: true,
+        onClose,
+        footer: [
+          h('button', { key: 'snap', type: 'button', className: 'pm-btn', disabled: busy, onClick: () => void snapshot() }, '留一个快照'),
+          h('button', { key: 'close', type: 'button', className: 'pm-btn is-primary', onClick: onClose }, '关闭')
+        ]
       },
-        h('header', { className: 'pm-head' },
-          h('div', { className: 'pm-head-main' },
-            h('div', { className: 'pm-head-title-row' },
-              h('span', { className: 'pm-title' }, '版本'),
-              h('span', { className: 'pm-pill is-ok' }, 'v' + info.version)),
-            h('button', {
-              className: 'pm-path',
-              title: '点击复制插件目录',
-              onClick: async () => {
-                const ok = await copyText(info.dir);
-                say(ok ? '目录已复制' : '复制失败', ok ? 'ok' : 'error');
-              }
-            }, info.dir)),
-          h('div', { className: 'pm-head-actions' },
-            h('button', { className: 'pm-btn', onClick: load }, '刷新'),
-            h('button', {
-              className: 'pm-btn is-primary',
-              onClick: backup,
-              disabled: busy === 'backup',
-              title: '把当前代码存成一份可回滚的快照'
-            }, busy === 'backup' ? h(Spinner) : null, '备份当前版本'))),
-
-        h('div', { className: 'pm-scroll' },
-          h('section', { className: 'pm-card' },
-            h('div', { className: 'pm-card-title' }, info.display + ' v' + info.version),
-            h('div', { className: 'pm-kv' },
-              h('span', null, '发布'), info.releasedAt || '—',
-              h('span', null, '代码指纹'), info.hash || '—'),
-            h('div', { className: 'pm-kv' },
-              h('span', null, '数据目录'), info.dataDir || '—',
-              h('span', null, '快照数'), String(history.length))),
-
-          changelog.length
-            ? h('section', { className: 'pm-card' },
-              h('div', { className: 'pm-card-title' }, '变更日志'),
-              changelog.map((item) => h('div', { className: 'pm-log-item', key: item.version },
-                h('div', { className: 'pm-log-head' },
-                  h('span', { className: cx('pm-chip', item.version === info.version ? 'is-on' : '') }, 'v' + item.version),
-                  h('span', { className: 'pm-log-title' }, item.title || ''),
-                  h('span', { className: 'pm-muted' }, item.at || '')),
-                h('ul', { className: 'pm-log-changes' },
-                  (item.changes || []).map((line, index) => h('li', { key: index }, line))))))
-            : null,
-
-          h('section', { className: 'pm-card' },
-            h('div', { className: 'pm-card-head' },
-              h('span', { className: 'pm-card-title' }, '提交记录'),
-              commits && commits.remote
-                ? h('button', {
-                  className: 'pm-btn is-ghost',
-                  title: '在浏览器里打开这个仓库',
-                  onClick: () => post('/openlink', { url: commits.remote })
-                    .catch((err) => say('打开失败：' + msg(err), 'error'))
-                }, '逛仓库')
-                : null),
-            h('div', { className: 'pm-repo' },
-              h('input', {
-                className: 'pm-input',
-                placeholder: 'https://github.com/你的账号/dafeiyu',
-                value: repoDraft,
-                onChange: (event) => setRepoDraft(event.target.value),
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter') saveRepo();
-                }
-              }),
-              h('button', {
-                className: 'pm-btn is-primary',
-                onClick: () => saveRepo(),
-                disabled: busy === 'repo'
-              }, busy === 'repo' ? h(Spinner) : null, '保存'),
-              repoDraft
-                ? h('button', {
-                  className: 'pm-btn',
-                  onClick: () => saveRepo(''),
-                  disabled: busy === 'repo'
-                }, '清除')
-                : null),
-            commits && commits.available
-              ? h('div', { className: 'pm-history' },
-                (commits.commits || []).map((item) => h('div', {
-                  className: 'pm-history-row',
-                  key: (item.hash || '') + (item.date || '') + (item.subject || '')
-                },
-                  h('div', { className: 'pm-history-main' },
-                    h('div', { className: 'pm-history-title' },
-                      h('span', { className: 'pm-chip is-on' }, item.hash || '——'),
-                      h('span', { className: 'pm-log-title' }, item.subject || '（没有说明）')),
-                    h('div', { className: 'pm-muted' },
-                      (item.date || '') + (item.author ? ' · ' + item.author : ''))))))
-              : h('div', { className: 'pm-hint' }, commits && commits.error ? commits.error : '还没有提交记录'),
-            h('div', { className: 'pm-card-hint' },
-              commits && commits.source === 'git'
-                ? '来自插件目录里的本地 git 仓库' + (commits.branch ? '（分支 ' + commits.branch + '）' : '') + '，最近 20 条'
-                : commits && commits.source === 'bundled'
-                  ? '来自打包时带上的提交记录' + (commits.builtAt ? '（' + commits.builtAt + ' 打包）' : '')
-                    + (commits.branch ? '（分支 ' + commits.branch + '）' : '')
-                    + (commits.liveError ? '；联网读取没成功：' + commits.liveError : '')
-                  : '在上面的输入框里填 GitHub 仓库地址，存一次就记住（存在数据目录里，重装也不丢）；也可以写在 version.json 的 repository.url 里')),
-
-          h('section', { className: 'pm-card' },
-            h('div', { className: 'pm-card-title' }, '历史快照'),
-            h('div', { className: 'pm-muted' }, '每次启动、每次手动备份都会留一份；回滚会用快照里的代码覆盖当前插件目录，回滚前先自动备份当前版本。'),
-            history.length
-              ? h('div', { className: 'pm-history' },
-                history.map((entry) => h('div', { className: 'pm-history-row', key: entry.id },
-                  h('div', { className: 'pm-history-main' },
-                    h('div', { className: 'pm-history-title' },
-                      h('span', { className: 'pm-history-version' }, 'v' + entry.version),
-                      h('span', { className: 'pm-chip' }, VERSION_KIND_LABEL[entry.kind] || entry.kind || '记录'),
-                      h('span', { className: 'pm-muted' }, fmtTime(Date.parse(entry.at) || Date.now()))),
-                    h('div', { className: 'pm-muted' }, entry.id + (entry.note ? ' · ' + entry.note : ''))),
-                  h('div', { className: 'pm-history-actions' },
-                    entry.restorable
-                      ? h('button', {
-                        className: 'pm-btn is-danger',
-                        onClick: () => rollback(entry),
-                        disabled: Boolean(busy)
-                      }, busy === entry.id ? h(Spinner) : null, '回滚到这版')
-                      : h('span', { className: 'pm-muted' }, entry.dir ? '旧插件版本，仅供查档' : '仅记录')))))
-              : h('div', { className: 'pm-hint' }, '还没有快照，点右上角「备份当前版本」'))
-        )
-      );
+        !info ? h('div', { className: 'pm-view-loading' }, h(Spinner, null)) : h('div', { className: 'pm-version' },
+          h('div', { className: 'pm-version-head' },
+            h('div', null, h('div', { className: 'pm-version-name' }, `${info.display} ${info.version}`), h('div', { className: 'pm-version-sub' }, info.releasedAt || '')),
+            h('div', { className: 'pm-version-path' }, info.dir)),
+          h('label', { className: 'pm-field' }, h('span', null, 'GitHub 仓库地址'), h('div', { className: 'pm-repo' },
+            h('input', { className: 'pm-input', value: repo, placeholder: 'https://github.com/lliujie/dsh-my-fish', onChange: (event) => setRepo(event.target.value) }),
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: busy, onClick: () => void saveRepo() }, '保存'))),
+          commits ? h('div', { className: 'pm-version-block' },
+            h('div', { className: 'pm-version-block-title' }, '提交记录'),
+            commits.remote ? h('div', { className: 'pm-version-sub' }, commits.remote) : null,
+            commits.error ? h('div', { className: 'pm-version-error' }, commits.error) : null,
+            (commits.commits || []).map((item) => h('div', { key: `${item.hash}-${item.subject}`, className: 'pm-commit' },
+              h('span', { className: 'pm-commit-hash' }, item.hash),
+              h('span', { className: 'pm-commit-subject' }, item.subject),
+              h('span', { className: 'pm-commit-meta' }, `${item.date || ''} ${item.author || ''}`)))) : null,
+          h('div', { className: 'pm-version-block' },
+            h('div', { className: 'pm-version-block-title' }, '变更日志'),
+            (info.changelog || []).map((entry) => h('div', { key: entry.version, className: 'pm-log-item' },
+              h('div', { className: 'pm-log-head' }, h('span', { className: 'pm-log-version' }, entry.version), h('span', { className: 'pm-log-title' }, entry.title || ''), h('span', { className: 'pm-log-date' }, entry.date || '')),
+              h('ul', { className: 'pm-log-changes' }, (entry.changes || []).map((change, index) => h('li', { key: index }, change)))))),
+          h('div', { className: 'pm-version-block' },
+            h('div', { className: 'pm-version-block-title' }, '历史快照'),
+            (info.history || []).length ? (info.history || []).slice().reverse().map((entry) => h('div', { key: entry.id, className: 'pm-history-row' },
+              h('div', { className: 'pm-history-main' },
+                h('span', { className: 'pm-history-version' }, entry.version),
+                h('span', { className: 'pm-history-kind' }, entry.kind || ''),
+                h('span', { className: 'pm-history-at' }, (entry.at || '').slice(0, 16).replace('T', ' '))),
+              h('button', { type: 'button', className: 'pm-btn is-mini is-danger', disabled: busy, onClick: () => void rollback(entry.id) }, '回滚')))
+              : h('div', { className: 'pm-version-sub' }, '还没有快照'))));
     }
 
-    /* ------------------------------ 根面板 */
+    /* ------------------------------------------------------------- 根面板 */
 
-    function Workbench(props) {
-      const get = props.get;
+    function PanelIcon() {
+      return h('svg', { width: '18', height: '18', viewBox: '0 0 64 64', fill: 'none', xmlns: 'http://www.w3.org/2000/svg' },
+        h('path', { d: 'M45 32c0 9.4-8.3 17-18.5 17S8 40.4 8 32s8.3-16 18.5-16S45 22.6 45 32Z', stroke: 'currentColor', strokeWidth: '3.4' }),
+        h('path', { d: 'M45 32 58 20v24L45 32Z', stroke: 'currentColor', strokeWidth: '3.4', strokeLinejoin: 'round' }),
+        h('circle', { cx: '17', cy: '27', r: '2.6', fill: 'currentColor' }));
+    }
+
+    function Workbench() {
       const [snapshot, setSnapshot] = useState(null);
-      const [activeId, setActiveId] = useState(null);
-      const [loading, setLoading] = useState(true);
+      const [activeId, setActiveId] = useState('');
       const [error, setError] = useState('');
       const [toast, setToast] = useState(null);
-      const [manual, setManual] = useState(null);
+      const [selection, setSelection] = useState(null);
+      const [sessionState, setSessionState] = useState({});
+      const [editing, setEditing] = useState(null);
+      const [creating, setCreating] = useState(false);
+      const [showingVersion, setShowingVersion] = useState(false);
       const [busy, setBusy] = useState(false);
-      const [askState, setAskState] = useState(null);
-      const [view, setView] = useState('project');
-      const [tab, setTab] = useState('project');
-      const [scenarios, setScenarios] = useState([]);
 
-      const say = useCallback((text, tone) => setToast({ text, tone: tone || 'ok', at: Date.now() }), []);
-
-      const ask = useCallback((text) => new Promise((resolve) => {
-        setAskState({ text, resolve });
-      }), []);
-
-      const answerAsk = useCallback((value) => {
-        setAskState((current) => {
-          if (current && typeof current.resolve === 'function') current.resolve(value);
-          return null;
-        });
+      const say = useCallback((text, kind) => {
+        setToast({ text, kind: kind || 'ok', at: Date.now() });
       }, []);
 
       useEffect(() => {
         if (!toast) return undefined;
-        const timer = setTimeout(() => setToast(null), 3600);
+        const timer = setTimeout(() => setToast(null), 2600);
         return () => clearTimeout(timer);
       }, [toast]);
 
       const refresh = useCallback(async () => {
-        try {
-          const value = await call('/state');
-          setSnapshot(value);
-          setError('');
-          setActiveId((current) => {
-            if (current && (value.projects || []).some((item) => item.id === current)) return current;
-            return value.projects && value.projects.length ? value.projects[0].id : null;
-          });
-          try {
-            const layouts = await call('/scenarios');
-            if (layouts && Array.isArray(layouts.items)) setScenarios(layouts.items);
-          } catch {
-            /* 场景读不到不影响主流程 */
-          }
-        } catch (err) {
-          setError('读取项目台账失败：' + msg(err));
-        } finally {
-          setLoading(false);
-        }
-      }, []);
-
-      const reloadScenarios = useCallback(async () => {
-        try {
-          const value = await post('/scenarios/refresh', {});
-          const items = value && Array.isArray(value.items) ? value.items : [];
-          setScenarios(items);
-          say('场景已刷新：' + items.length + ' 个');
-        } catch (err) {
-          say('刷新场景失败：' + msg(err), 'error');
-        }
-      }, [say]);
-
-      useEffect(() => {
-        refresh();
-      }, [refresh]);
-
-      const onPatched = useCallback((project, stats) => {
-        setSnapshot((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            projects: (prev.projects || []).map((item) =>
-              item.id === project.id ? { ...project, stats: stats || item.stats } : item)
-          };
-        });
-      }, []);
-
-      const createProject = useCallback(async (dir) => {
-        const target = String(dir || '').trim();
-        if (!target) return;
         setBusy(true);
         try {
-          const created = await post('/project/create', { root: target });
-          let project = created.project;
-          try {
-            let workspaceId = findWorkspace(get, project.root);
-            if (!workspaceId) {
-              const workspaces = svc(get, 'workspaces');
-              if (workspaces) {
-                const view = await workspaces.create({ path: project.root });
-                workspaceId = view && (view.workspaceId || (view.workspace && view.workspace.workspaceId)) || null;
-              }
-            }
-            if (workspaceId) {
-              const updated = await post('/project/update', { id: project.id, patch: { workspaceId } });
-              project = updated.project;
-            }
-          } catch {
-            /* 已有工作区或创建失败都不阻塞添加项目 */
-          }
-          setSnapshot((prev) => ({
-            presets: (prev && prev.presets) || [],
-            projects: [{ ...project, stats: created.stats }].concat(prev ? prev.projects : [])
-          }));
-          setActiveId(project.id);
-          setManual(null);
-          say('已添加项目：' + project.name);
+          const value = await get('/state');
+          setSnapshot(value);
+          setError('');
+          const scenes = (value && value.scenes) || [];
+          const wanted = activeId || (value && value.settings && value.settings.lastScene) || '';
+          const found = scenes.find((scene) => scene.id === wanted) || scenes[0] || null;
+          setActiveId(found ? found.id : '');
         } catch (err) {
-          say('添加失败：' + msg(err), 'error');
+          setError(msg(err));
         } finally {
           setBusy(false);
         }
-      }, [get, say]);
+      }, [activeId]);
 
-      const pickAndAdd = useCallback(async () => {
-        const uiWorkspace = svc(get, 'uiWorkspace');
-        if (!uiWorkspace || typeof uiWorkspace.pickDirectory !== 'function') {
-          setManual({ value: '' });
-          say('这个版本没有目录选择服务，请手填路径', 'error');
-          return;
-        }
+      useEffect(() => { void refresh(); }, [refresh]);
+
+      const scenes = (snapshot && snapshot.scenes) || [];
+      const active = scenes.find((scene) => scene.id === activeId) || null;
+
+      const switchScene = async (id) => {
+        setActiveId(id);
+        setSelection(null);
         try {
-          const dir = await uiWorkspace.pickDirectory();
-          if (!dir) return;
-          await createProject(dir);
-        } catch (err) {
-          say('选择目录失败：' + msg(err), 'error');
+          await post('/settings/update', { lastScene: id });
+        } catch {
+          /* 记住上次场景失败不影响使用 */
         }
-      }, [createProject, get, say]);
+      };
 
-      const removeProject = useCallback(async (project) => {
-        try {
-          const value = await post('/project/delete', { id: project.id });
-          setSnapshot((prev) => {
-            if (!prev) return prev;
-            const statsMap = new Map((prev.projects || []).map((item) => [item.id, item.stats]));
-            const projects = (value.projects || []).map((item) => ({ ...item, stats: statsMap.get(item.id) || null }));
-            return { ...prev, projects };
-          });
-          setActiveId((current) => {
-            if (current !== project.id) return current;
-            const left = ((snapshot && snapshot.projects) || []).filter((item) => item.id !== project.id);
-            return left.length ? left[0].id : null;
-          });
-          say('已移除项目：' + project.name);
-        } catch (err) {
-          say('移除失败：' + msg(err), 'error');
-        }
-      }, [say, snapshot]);
+      const onSavedScene = async (scene) => {
+        setEditing(null);
+        await refresh();
+        if (scene && scene.id) setActiveId(scene.id);
+      };
 
-      const projects = (snapshot && snapshot.projects) || [];
-      const presets = (snapshot && snapshot.presets) || [];
-      const active = projects.find((item) => item.id === activeId) || null;
+      const harnessPanels = active ? active.panels.filter((panel) => panel.type === 'harness') : [];
 
-      return h(
-        'div',
-        {
-          className: 'pm-root',
-          style: {
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'stretch',
-            gap: 10,
-            position: 'relative',
-            width: '100%',
-            height: '100%',
-            minWidth: 0,
-            minHeight: 0,
-            boxSizing: 'border-box',
-            padding: 'calc(var(--dsh-frame-top-clearance, 0px) + 6px) 12px 10px',
-            background: 'var(--dsw-alias-bg-base)',
-            color: 'var(--dsw-alias-label-primary)',
-            fontSize: 13
-          }
-        },
-        h('style', null, CSS),
-
-        h('nav', { className: 'pm-tabs' },
-          [
-            { id: 'project', label: '项目', hint: '项目、文件与智能体' },
-            { id: 'versions', label: '版本', hint: '变更日志与一键回滚' }
-          ].map((item) => h('button', {
-            key: item.id,
-            className: cx('pm-tab', tab === item.id ? 'is-active' : ''),
-            title: item.hint,
-            onClick: () => setTab(item.id)
-          }, item.label))),
-
-        tab === 'versions'
-          ? h(VersionsPane, { say, ask })
-          : h('div', { className: 'pm-workspace' },
-
-        h('aside', {
-          className: 'pm-rail',
-          style: { flex: '0 0 216px', width: 216, maxWidth: 216, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'hidden' }
-        },
-          h('div', { className: 'pm-rail-head' },
-            h('span', { className: 'pm-rail-title' }, '项目'),
-            h('span', { className: 'pm-rail-head-right' },
-              h('span', { className: 'pm-rail-count' }, projects.length ? String(projects.length) : ''),
-              h('button', {
-                className: 'pm-btn is-ghost pm-icon-btn',
-                onClick: refresh,
-                title: '重新读取项目列表'
-              }, '刷新'))),
-          h('div', { className: 'pm-rail-pin' },
-            h('button', {
-              className: cx('pm-proj pm-proj-pin', view === 'overview' ? 'is-active' : ''),
-              onClick: () => setView('overview'),
-              title: '所有项目的汇总、检索与周报'
-            },
-              h('span', { className: 'pm-proj-name' }, '总览'),
-              h('span', { className: 'pm-proj-foot' },
-                h('span', { className: 'pm-proj-count' },
-                  projects.length ? projects.length + ' 个项目' : '还没有项目')))),
-          h('div', { className: 'pm-rail-list' },
-            projects.map((project) =>
-              h('button', {
-                key: project.id,
-                className: cx('pm-proj', project.id === activeId && view === 'project' ? 'is-active' : ''),
-                onClick: () => {
-                  setActiveId(project.id);
-                  setView('project');
-                },
-                title: project.root
-              },
-                h('span', { className: 'pm-proj-name' }, project.name),
-                h('span', { className: 'pm-proj-foot' },
-                  h('span', { className: 'pm-proj-count' },
-                    (project.stats ? (project.stats.files || 0) : 0) + ' 文件'),
-                  project.stats && project.stats.exists === false
-                    ? h('span', { className: 'pm-proj-warn' }, '目录缺失')
-                    : null))),
-            loading && !projects.length ? h('div', { className: 'pm-hint' }, '载入中…') : null,
-            !loading && !projects.length
-              ? h('div', { className: 'pm-empty-small' },
-                h('p', null, '还没有项目'),
-                h('p', { className: 'pm-muted' }, '点下面的按钮选一个本地文件夹'))
-              : null),
-          manual
-            ? h('div', { className: 'pm-manual' },
-              h('input', {
-                className: 'pm-input',
-                value: manual.value,
-                placeholder: 'D:\\项目\\某某项目',
-                autoFocus: true,
-                onChange: (event) => setManual({ value: event.target.value }),
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter') createProject(manual.value);
-                  if (event.key === 'Escape') setManual(null);
-                }
-              }),
-              h('div', { className: 'pm-actions' },
-                h('button', { className: 'pm-btn is-primary', onClick: () => createProject(manual.value), disabled: busy }, '添加'),
-                h('button', { className: 'pm-btn is-ghost', onClick: () => setManual(null) }, '取消')))
-            : null,
-          h('div', { className: 'pm-rail-foot' },
-            h('button', { className: 'pm-btn is-primary pm-block', onClick: pickAndAdd, disabled: busy },
-              busy ? h(Spinner) : null, '＋ 添加项目'),
-            h('button', {
-              className: 'pm-btn is-ghost pm-block',
-              onClick: () => setManual({ value: '' })
-            }, '手填路径'))),
-
-        view === 'overview'
-          ? h(OverviewPane, {
-            projects,
-            presets,
-            say,
-            onOpenProject: (id) => {
-              setActiveId(id);
-              setView('project');
+      useEffect(() => {
+        if (!active || !harnessPanels.length) return undefined;
+        let alive = true;
+        const tick = async () => {
+          const next = {};
+          for (const panel of harnessPanels) {
+            try {
+              const value = await get(`/chat/state?sceneId=${encodeURIComponent(active.id)}&panelId=${encodeURIComponent(panel.id)}`);
+              next[panel.id] = value || {};
+            } catch {
+              /* 忽略 */
             }
-          })
-          : active
-          ? h(ProjectWindow, {
-            key: active.id,
-            project: active,
-            presets,
-            get,
-            say,
-            ask,
-            onPatched,
-            onDelete: removeProject,
-            scenarios,
-            onRefreshScenarios: reloadScenarios
-          })
-          : h('section', {
-            className: 'pm-main pm-main-empty',
-            style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, gap: 10 }
-          },
-            error
-              ? h('div', { className: 'pm-empty' },
-                h('p', { className: 'pm-empty-title' }, '读取失败'),
-                h('p', { className: 'pm-muted' }, error))
-              : h('div', { className: 'pm-empty' },
-                h('p', { className: 'pm-empty-title' }, '大肥鱼'),
-                h('p', { className: 'pm-muted' }, '左侧添加一个项目目录：'),
-                h('p', { className: 'pm-muted' }, '· 文件树直接浏览本地文件夹，文本文件就地编辑'),
-                h('p', { className: 'pm-muted' }, '· Office / PDF 一键用系统程序打开'),
-                h('p', { className: 'pm-muted' }, '· 每个项目一个主智能体，按模块派子智能体')))),
+          }
+          if (alive) setSessionState(next);
+        };
+        void tick();
+        const timer = setInterval(tick, 4000);
+        return () => {
+          alive = false;
+          clearInterval(timer);
+        };
+      }, [active, harnessPanels.map((panel) => panel.id).join(',')]);
 
-        h(Toast, { toast, onClose: () => setToast(null) }),
-
-        askState
-          ? h('div', { className: 'pm-modal' },
-            h('div', { className: 'pm-modal-card' },
-              h('p', { className: 'pm-modal-text' }, askState.text),
-              h('div', { className: 'pm-modal-actions' },
-                h('button', { className: 'pm-btn is-ghost', onClick: () => answerAsk(false) }, '取消'),
-                h('button', { className: 'pm-btn is-primary', onClick: () => answerAsk(true) }, '确定'))))
-          : null
-      );
+      return h('div', { className: 'pm-root' },
+        h('style', null, CSS),
+        h('header', { className: 'pm-top' },
+          h('div', { className: 'pm-brand' },
+            h('span', { className: 'pm-brand-mark' }, h(PanelIcon, null)),
+            h('span', { className: 'pm-brand-name' }, '大肥鱼'),
+            snapshot && snapshot.version ? h('span', { className: 'pm-brand-version' }, `v${snapshot.version.version}`) : null),
+          h('div', { className: 'pm-tabs' },
+            scenes.map((scene) => h('button', {
+              key: scene.id,
+              type: 'button',
+              title: `${scene.name}${scene.description ? ' · ' + scene.description : ''}`,
+              className: cx('pm-tab', scene.id === activeId && 'is-active'),
+              onClick: () => void switchScene(scene.id)
+            }, scene.name)),
+            scenes.length ? null : h('span', { className: 'pm-tabs-empty' }, '还没有场景'),
+            h('button', { type: 'button', className: 'pm-tab is-add', onClick: () => setCreating(true) }, '＋')),
+          h('div', { className: 'pm-top-actions' },
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: busy, onClick: () => void refresh() }, busy ? '刷新中…' : '⟳ 刷新'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !active, onClick: () => setEditing(active) }, '编辑场景'),
+            h('button', { type: 'button', className: 'pm-btn is-mini', onClick: () => setShowingVersion(true) }, '版本'))),
+        error ? h('div', { className: 'pm-error' }, error) : null,
+        active
+          ? h(SceneGrid, { scene: active, selection, onPick: setSelection, say, sessionState })
+          : h('div', { className: 'pm-empty-scene' },
+            h(Empty, { title: busy ? '正在读场景…' : '还没有场景', hint: '点右上「＋」建一个：给它起个名字、指一个目录，就能开会话干活了' })),
+        h(Toast, { toast }),
+        h(SceneEditor, { scene: editing, onClose: () => setEditing(null), onSaved: onSavedScene, say }),
+        creating ? h(NewSceneForm, { onClose: () => setCreating(false), onCreated: onSavedScene, say }) : null,
+        showingVersion ? h(VersionPanel, { onClose: () => setShowingVersion(false), say }) : null);
     }
 
-    /* ------------------------------------------------------------ 样式 */
+    /* ------------------------------------------------------------------ 样式 */
 
     const CSS = [
-      '.pm-root{display:grid;grid-template-columns:216px minmax(0,1fr);height:100%;min-height:0;box-sizing:border-box;padding:calc(var(--dsh-frame-top-clearance,0px) + 6px) 12px 10px;gap:10px;color:var(--dsw-alias-label-primary);font-size:13px;background:var(--dsw-alias-bg-base);}',
-      '.pm-icon{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--dsw-specific-sidebar-fill,currentColor);}',
-      '.pm-rail{display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
-      '.pm-rail-head{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-bottom:1px solid var(--dsw-alias-border-l1);font-weight:600;font-size:12px;color:var(--dsw-alias-label-secondary);letter-spacing:.02em;}',
-      '.pm-rail-count{font-weight:400;color:var(--dsw-alias-label-caption);}',
-      '.pm-rail-list{flex:1;min-height:0;overflow:auto;padding:6px;}',
-      '.pm-proj{display:flex;flex-direction:column;gap:3px;width:100%;padding:7px 8px;margin-bottom:2px;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer;}',
-      '.pm-proj:hover{background:var(--dsw-alias-bg-layer-2);}',
-      '.pm-proj.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
-      '.pm-proj-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-proj-foot{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-proj-warn{color:var(--dsw-alias-state-warn-primary);}',
-      '.pm-rail-foot{padding:8px;border-top:1px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:6px;}',
-      '.pm-rail-foot-row{display:flex;gap:6px;justify-content:space-between;}',
-      '.pm-rail-head-right{display:flex;align-items:center;gap:6px;}',
-      '.pm-icon-btn{padding:2px 8px;font-size:11px;line-height:1.5;border-radius:var(--dsw-radius-sm);}',
-      '.pm-manual{padding:8px;border-top:1px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:6px;}',
-      '.pm-main{display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px;}',
-      '.pm-rail,.pm-head,.pm-notes,.pm-pane,.pm-main-empty{backdrop-filter:blur(18px) saturate(1.06);-webkit-backdrop-filter:blur(18px) saturate(1.06);}',
-      '.pm-main-empty{justify-content:center;align-items:center;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-head-main{display:flex;flex-direction:column;gap:4px;min-width:0;}',
-      '.pm-head-title-row{display:flex;align-items:center;gap:8px;min-width:0;}',
-      '.pm-title{padding:0;border:none;background:transparent;color:inherit;font:inherit;font-size:15px;font-weight:600;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px;}',
-      '.pm-title:hover{text-decoration:underline dotted;}',
-      '.pm-path{padding:0;border:none;background:transparent;color:var(--dsw-alias-label-caption);font:inherit;font-size:11px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}',
-      '.pm-path:hover{color:var(--dsw-alias-label-secondary);}',
-      '.pm-head-stats{display:flex;gap:10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-head-actions{display:flex;gap:6px;flex:none;}',
-      '.pm-pill{padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-caption);white-space:nowrap;}',
-      '.pm-pill.is-ok{color:var(--dsw-alias-state-success-primary);border-color:rgba(90,168,122,.45);}',
-      '.pm-pill.is-idle{color:var(--dsw-alias-label-caption);}',
-      '.pm-pill.is-warn{color:var(--dsw-alias-state-warn-primary);border-color:rgba(217,139,95,.45);}',
-      '.pm-notes{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-body{display:grid;grid-template-columns:minmax(170px,244px) minmax(0,1fr) minmax(286px,356px);gap:10px;flex:1;min-height:0;}',
-      '.pm-body.no-files{grid-template-columns:minmax(0,1fr) minmax(286px,356px);}',
-      '.pm-body.no-agent{grid-template-columns:minmax(170px,244px) minmax(0,1fr);}',
-      '.pm-body.no-files.no-agent{grid-template-columns:minmax(0,1fr);}',
-      '.pm-body.no-files.no-agent .pm-editor-body{max-width:none;}',
-      '.pm-pane{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
-      '.pm-pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);min-height:34px;box-sizing:border-box;}',
-      '.pm-pane-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-pane-sub{font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-pane-tools{display:flex;gap:4px;flex:none;}',
-      '.pm-pane-body{flex:1;min-height:0;overflow:auto;padding:6px;}',
-      '.pm-pane-foot{padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1);font-size:11px;color:var(--dsw-alias-label-caption);min-height:20px;box-sizing:border-box;}',
-      '.pm-tree{display:flex;flex-direction:column;gap:1px;}',
-      '.pm-tree-row{display:flex;align-items:center;gap:6px;width:100%;height:24px;padding:0 6px;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;}',
-      '.pm-tree-row:hover{background:var(--dsw-alias-bg-layer-2);}',
-      '.pm-tree-row.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
-      '.pm-caret{width:10px;flex:none;font-size:9px;color:var(--dsw-alias-label-caption);}',
-      '.pm-badge{flex:none;min-width:26px;text-align:center;font-size:9px;letter-spacing:.02em;padding:1px 3px;border-radius:3px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-caption);}',
-      '.pm-badge.t-doc{color:var(--dsw-alias-state-business-primary);}',
-      '.pm-badge.t-xls{color:var(--dsw-alias-state-success-primary);}',
-      '.pm-badge.t-ppt{color:var(--dsw-alias-state-warn-primary);}',
-      '.pm-badge.t-pdf{color:var(--dsw-alias-state-error-primary);}',
-      '.pm-badge.t-img{color:#a884d8;}',
-      '.pm-tree-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-textarea{flex:1;width:100%;min-height:100%;box-sizing:border-box;resize:none;border:none;outline:none;background:transparent;color:inherit;font-family:ui-monospace,SFMono-Regular,Consolas,"Cascadia Code",Menlo,monospace;font-size:12px;line-height:1.62;padding:10px 12px;tab-size:2;}',
-      '.pm-dirty{color:var(--dsw-alias-state-warn-primary);}',
-      '.pm-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:20px;text-align:center;}',
-      '.pm-empty-title{font-size:13px;font-weight:600;margin:0;}',
-      '.pm-modal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.34);z-index:60;border-radius:var(--dsw-radius-sm);}',
-      '.pm-modal-card{min-width:290px;max-width:min(430px,86%);padding:16px 16px 12px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv3);}',
-      '.pm-modal-text{margin:0 0 14px;font-size:13px;line-height:1.55;color:var(--dsw-alias-label-primary);}',
-      '.pm-modal-actions{display:flex;justify-content:flex-end;gap:8px;}',
-      '.pm-empty-small{padding:10px;font-size:12px;color:var(--dsw-alias-label-secondary);text-align:center;}',
-      '.pm-muted{color:var(--dsw-alias-label-caption);font-size:11px;margin:0;}',
-      '.pm-image-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto;background:var(--dsw-alias-bg-base);}',
-      '.pm-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:var(--dsw-radius-sm);}',
-      '.pm-pdf-wrap{flex:1;display:flex;min-height:0;background:var(--dsw-alias-bg-base);}',
-      '.pm-pdf{flex:1;border:none;width:100%;height:100%;}',
-      '.pm-doc{flex:1;display:flex;flex-direction:column;min-height:0;}',
-      '.pm-doc-scroll{flex:1;overflow:auto;padding:14px 16px 6px;display:flex;flex-direction:column;align-items:center;gap:14px;}',
-      '.pm-page-wrap{margin:0;display:flex;flex-direction:column;align-items:center;gap:5px;max-width:100%;}',
-      '.pm-page{max-width:100%;height:auto;display:block;border-radius:5px;background:#fff;box-shadow:var(--dsw-shadow-lv3);}',
-      '.pm-page-cap{font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-doc-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:4px 12px 6px;}',
-      '.pm-doc-note{font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-doc-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:20px;text-align:center;}',
-      '.pm-doc-loading-text{display:flex;flex-direction:column;gap:3px;align-items:center;}',
-      '.pm-empty-actions{display:flex;gap:6px;margin-top:4px;}',
-      '.pm-preview{flex:1;padding:12px 16px;overflow:auto;line-height:1.7;font-size:13px;}',
-      '.pm-md-h{margin:14px 0 6px;line-height:1.35;}',
-      '.pm-md-h:first-child{margin-top:0;}',
-      '.pm-md-p{margin:7px 0;}',
-      '.pm-md-list{margin:6px 0 6px 18px;padding:0;}',
-      '.pm-md-list li{margin:2px 0;}',
-      '.pm-quote{margin:8px 0;padding:2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);}',
-      '.pm-pre{margin:8px 0;padding:9px 11px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);overflow:auto;font-size:12px;line-height:1.55;}',
-      '.pm-code{padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-family:ui-monospace,Consolas,monospace;font-size:11px;}',
-      '.pm-table{border-collapse:collapse;margin:8px 0;font-size:12px;}',
-      '.pm-table th,.pm-table td{border:1px solid var(--dsw-alias-border-l1);padding:4px 8px;text-align:left;}',
-      '.pm-table th{background:var(--dsw-alias-bg-layer-2);font-weight:600;}',
-      '.pm-agent-body{display:flex;flex-direction:column;gap:8px;padding:8px;}',
-      '.pm-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);padding:9px 10px;display:flex;flex-direction:column;gap:6px;}',
-      '.pm-card-grow{flex:1;min-height:0;overflow:auto;}',
-      '.pm-card-head{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
-      '.pm-card-title{font-size:12px;font-weight:600;}',
-      '.pm-card-note{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.5;}',
-      '.pm-card-hint{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-repo{display:flex;align-items:center;gap:6px;margin:6px 0 2px;}',
-      '.pm-repo .pm-input{flex:1 1 auto;min-width:0;font-size:11px;}',
-      '.pm-actions{display:flex;flex-wrap:wrap;gap:5px;}',
-      '.pm-block{width:100%;justify-content:center;}',
-      '.pm-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:26px;padding:0 9px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;}',
-      '.pm-btn:hover:not(:disabled){border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);}',
-      '.pm-btn:disabled{opacity:.45;cursor:not-allowed;}',
-      '.pm-btn.is-primary{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);}',
-      '.pm-btn.is-primary:hover{background:var(--dsw-alias-bg-overlay);}',
-      '.pm-btn:disabled{opacity:.5;cursor:default;}',
-      '.pm-btn.is-ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);}',
-      '.pm-btn.is-ghost:hover:not(:disabled){background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);}',
-      '.pm-btn.is-danger{color:var(--dsw-alias-state-error-primary);}',
-      '.pm-chip{padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;}',
-      '.pm-chip:hover{background:var(--dsw-alias-bg-overlay);}',
-      '.pm-form{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);}',
-      '.pm-form-row{display:flex;flex-direction:column;gap:3px;}',
-      '.pm-label{font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-input{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:5px 7px;font:inherit;font-size:12px;}',
-      '.pm-input:focus{outline:none;border-color:var(--dsw-alias-border-l2);}',
-      '.pm-input-multi{resize:vertical;line-height:1.5;font-family:inherit;}',
-      '.pm-input-title{font-size:14px;font-weight:600;max-width:360px;}',
-      '.pm-presets{display:flex;flex-wrap:wrap;gap:4px;align-items:center;}',
-      '.pm-mod-list{display:flex;flex-direction:column;gap:6px;}',
-      '.pm-mod{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);padding:7px 8px;display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-mod.is-off{opacity:.55;}',
-      '.pm-mod-head{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
-      '.pm-mod-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-mod-role{margin:0;font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}',
-      '.pm-mod-meta{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-mod-actions{display:flex;gap:2px;margin-top:1px;}',
-      '.pm-switch{width:26px;height:15px;flex:none;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);padding:1px;cursor:pointer;display:inline-flex;align-items:center;}',
-      '.pm-switch.is-on{background:var(--dsw-alias-brand-primary);border-color:transparent;justify-content:flex-end;}',
-      '.pm-switch-dot{width:11px;height:11px;border-radius:50%;background:var(--dsw-alias-label-caption);}',
-      '.pm-switch.is-on .pm-switch-dot{background:#fff;}',
-      '.pm-hint{padding:8px 10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-hint.is-error{color:var(--dsw-alias-state-error-primary);}',
-      '.pm-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);max-width:70%;padding:7px 14px;border-radius:var(--dsw-radius-sm);font-size:12px;cursor:pointer;z-index:20;box-shadow:var(--dsw-shadow-lv2);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);}',
-      '.pm-toast.is-error{color:var(--dsw-alias-state-error-primary);}',
-      '.pm-rail-pin{padding:6px 6px 0;}',
-      '.pm-proj-pin{border-color:var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);}',
-      '.pm-agent-body{display:flex;flex-direction:column;gap:8px;padding:8px;overflow:hidden;}',
-      '.pm-chat-slot{flex:0 0 auto;height:48%;min-height:215px;display:flex;min-height:0;}',
-      '.pm-chat{flex:1;display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
-      '.pm-chat-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);min-height:32px;box-sizing:border-box;}',
-      '.pm-chat-title{font-size:12px;font-weight:600;flex:none;}',
-      '.pm-chat-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-label-caption);}',
-      '.pm-chat-dot.is-idle{background:var(--dsw-alias-state-success-primary);}',
-      '.pm-chat-dot.is-busy{background:var(--dsw-alias-state-warn-primary);animation:pm-pulse 1.1s ease-in-out infinite;}',
-      '.pm-chat-status{flex:1;font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '@keyframes pm-pulse{0%,100%{opacity:.35;}50%{opacity:1;}}',
-      '.pm-chat-box{flex:1;min-height:0;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:7px;}',
-      '.pm-chat-hint{font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.55;}',
-      '.pm-chat-hint.is-error{color:var(--dsw-alias-state-error-primary);}',
-      '.pm-msg{display:flex;flex-direction:column;gap:2px;max-width:100%;}',
-      '.pm-msg-role{font-size:10px;color:var(--dsw-alias-label-caption);}',
-      '.pm-msg-text{font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}',
-      '.pm-msg.is-user{align-items:flex-end;}',
-      '.pm-msg.is-user .pm-msg-text{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
-      '.pm-chat-composer{display:flex;flex-direction:column;gap:5px;padding:7px 8px;border-top:1px solid var(--dsw-alias-border-l1);}',
-      '.pm-chat-input{width:100%;box-sizing:border-box;resize:none;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:6px 8px;font:inherit;font-size:12px;line-height:1.5;}',
-      '.pm-chat-input:focus{outline:none;border-color:var(--dsw-alias-border-l2);}',
-      '.pm-chat-actions{display:flex;align-items:center;gap:6px;justify-content:space-between;}',
-      '.pm-chat-links{display:flex;gap:2px;flex-wrap:wrap;justify-content:flex-end;}',
-      '.pm-ov{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px;min-height:0;}',
-      '.pm-ov-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-ov-title{font-size:15px;font-weight:600;}',
-      '.pm-ov-stats{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-ov-stat b{color:var(--dsw-alias-label-primary);font-size:14px;margin-right:2px;}',
-      '.pm-ov-body{flex:1;min-height:0;display:flex;gap:10px;}',
-      '.pm-ov-main{flex:1;min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}',
-      '.pm-ov-section{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
-      '.pm-ov-sec-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
-      '.pm-ov-sec-actions{display:flex;align-items:center;gap:4px;}',
-      '.pm-ov-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;}',
-      '.pm-ov-card{display:flex;flex-direction:column;gap:4px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:inherit;font:inherit;text-align:left;cursor:pointer;}',
-      '.pm-ov-card:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);}',
-      '.pm-ov-card-top{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
-      '.pm-ov-card-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-ov-card-path{font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-ov-card-row{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-ov-card-files{display:flex;flex-wrap:wrap;gap:4px;}',
-      '.pm-ov-file{font-size:10px;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);}',
-      '.pm-ov-search{display:flex;gap:6px;}',
-      '.pm-ov-hits{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow:auto;}',
-      '.pm-ov-hit{display:flex;flex-wrap:wrap;gap:6px;padding:5px 7px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);font-size:11px;}',
-      '.pm-ov-hit-proj{color:var(--dsw-alias-brand-primary);}',
-      '.pm-ov-hit-rel{color:var(--dsw-alias-label-secondary);}',
-      '.pm-ov-hit-kind{color:var(--dsw-alias-label-caption);}',
-      '.pm-ov-hit-text{flex-basis:100%;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-ov-report{display:flex;flex-direction:column;gap:6px;}',
-      '.pm-ov-report-body{margin:0;max-height:320px;overflow:auto;padding:9px 11px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;}',
-      '.pm-ov-report-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}',
-      '.pm-ov-chat{flex:0 0 340px;min-width:0;display:flex;}',
-      '.pm-ov-note{font-size:11px;color:var(--dsw-alias-state-error-primary);}',
-      '.pm-chip.is-on{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);}',
-      '.pm-tabs{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;align-self:flex-start;padding:3px;border-radius:var(--dsw-radius-md);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv1);}',
-      '.pm-tab{padding:5px 16px;border-radius:var(--dsw-radius-sm);border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;transition:background .12s ease,color .12s ease;}',
+      '.pm-root{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;}',
+      '.pm-top{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:0 0 auto;}',
+      '.pm-brand{display:flex;align-items:center;gap:6px;color:var(--dsw-alias-brand-primary);font-weight:600;}',
+      '.pm-brand-mark{display:inline-flex;align-items:center;}',
+      '.pm-brand-version{font-size:11px;color:var(--dsw-alias-label-caption);font-weight:400;}',
+      '.pm-tabs{display:inline-flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);flex-wrap:wrap;}',
+      '.pm-tab{border:0;background:transparent;color:var(--dsw-alias-label-secondary);height:26px;padding:0 10px;border-radius:var(--dsw-radius-sm);cursor:pointer;font-size:12.5px;transition:background-color .12s,color .12s;}',
       '.pm-tab:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.pm-tab.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:var(--dsw-shadow-lv1);}',
-      '.pm-workspace{display:flex;align-items:stretch;gap:10px;flex:1;min-height:0;min-width:0;}',
-      '.pm-scroll{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:2px;}',
-      '.pm-kv{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-kv span{display:inline-flex;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;}',
-      '.pm-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-border-l2);}',
-      '.pm-dot.is-ok{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px rgba(90,168,122,.16);}',
-      '.pm-dot.is-down{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 3px rgba(217,122,122,.16);}',
-      '.pm-dot.is-idle{background:var(--dsw-alias-label-caption);opacity:.45;}',
-      '.pm-form-grid{display:grid;grid-template-columns:56px minmax(0,1fr) 56px minmax(0,1fr);gap:6px 8px;align-items:center;}',
-      '.pm-form-grid label{font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-log-item{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
-      '.pm-log-head{display:flex;align-items:center;gap:8px;font-size:12px;}',
-      '.pm-log-title{font-weight:600;}',
-      '.pm-log-changes{margin:0;padding-left:16px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);}',
-      '.pm-history{display:flex;flex-direction:column;gap:5px;max-height:340px;overflow:auto;}',
-      '.pm-history-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
-      '.pm-history-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}',
-      '.pm-history-title{display:flex;align-items:center;gap:7px;font-size:12px;}',
-      '.pm-history-version{font-weight:600;}',
-      '.pm-history-actions{display:flex;gap:4px;flex:0 0 auto;}',
-      '.pm-spinner{width:10px;height:10px;border-radius:50%;border:1.5px solid currentColor;border-top-color:transparent;display:inline-block;animation:pm-spin .8s linear infinite;}',
-      '.pm-btn.is-sm{height:22px;padding:0 7px;font-size:11px;border-radius:var(--dsw-radius-sm);}',
-      '.pm-root :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;}',
-      'html[data-input-modality="pointer"] .pm-root :focus-visible:not(:read-write){outline-color:transparent;}',
-      '.pm-scroll::-webkit-scrollbar,.pm-pane-body::-webkit-scrollbar,.pm-history::-webkit-scrollbar{width:5px;height:5px;}',
-      '.pm-scroll::-webkit-scrollbar-thumb,.pm-pane-body::-webkit-scrollbar-thumb,.pm-history::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l1);border-radius:999px;}',
-      '.pm-scroll::-webkit-scrollbar-thumb:hover,.pm-pane-body::-webkit-scrollbar-thumb:hover,.pm-history::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-scrollbar-hover-l1);}',
-      '.pm-scroll::-webkit-scrollbar-track,.pm-pane-body::-webkit-scrollbar-track,.pm-history::-webkit-scrollbar-track{background:transparent;}',
-      '.pm-btn,.pm-tab,.pm-chip,.pm-tree-row{transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease;}',
-      '.pm-btn:disabled{opacity:.45;cursor:not-allowed;}',
-      '.pm-empty{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:transparent;}',
-      '.pm-input:focus-visible{border-color:var(--dsw-alias-state-business-primary);}',
-      '.pm-card{background:var(--dsw-alias-bg-layer-3);}',
+      '.pm-tab.is-active{background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1);}',
+      '.pm-tab.is-add{color:var(--dsw-alias-label-caption);width:26px;padding:0;}',
+      '.pm-tabs-empty{font-size:12px;color:var(--dsw-alias-label-caption);padding:0 6px;}',
+      '.pm-top-actions{margin-left:auto;display:flex;align-items:center;gap:6px;}',
+      '.pm-grid{display:grid;flex:1 1 auto;min-height:0;gap:8px;padding:8px 10px 10px;}',
+      '.pm-cell{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;}',
+      '.pm-pane{display:flex;flex-direction:column;min-height:0;min-width:0;height:100%;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);overflow:hidden;}',
+      '.pm-pane-head{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:0 0 auto;background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-pane-title{display:flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px;min-width:0;}',
+      '.pm-pane-title-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;}',
+      '.pm-pane-hint{font-weight:400;color:var(--dsw-alias-label-caption);font-size:11.5px;}',
+      '.pm-pane-actions{margin-left:auto;display:flex;align-items:center;gap:4px;}',
+      '.pm-pane-dot{width:7px;height:7px;border-radius:999px;background:var(--dsw-alias-label-caption);flex:0 0 auto;}',
+      '.pm-pane-dot.is-harness{background:var(--dsw-alias-brand-primary);}',
+      '.pm-pane-dot.is-file{background:var(--dsw-alias-state-success-primary);}',
+      '.pm-pane-dot.is-view{background:var(--dsw-alias-state-business-primary);}',
+      '.pm-pane-dot.is-web{background:var(--dsw-alias-state-warn-primary);}',
+      '.pm-pane-dot.is-note{background:var(--dsw-alias-state-done-primary);}',
+      '.pm-btn{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);cursor:pointer;font-size:12px;transition:background-color .12s,border-color .12s;}',
+      '.pm-btn:hover{background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-btn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;}',
+      '.pm-btn:disabled{opacity:.45;cursor:default;}',
+      '.pm-btn.is-primary{background:var(--dsw-alias-brand-primary);border-color:transparent;color:#fff;}',
+      '.pm-btn.is-danger{color:var(--dsw-alias-state-error-primary);}',
+      '.pm-btn.is-mini{height:24px;padding:0 8px;font-size:11.5px;}',
+      '.pm-tree{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;}',
+      '.pm-tree-row{display:flex;align-items:center;gap:5px;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:4px 6px;border-radius:var(--dsw-radius-sm);cursor:pointer;font-size:12.5px;transition:background-color .12s;}',
+      '.pm-tree-row:hover{background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-tree-row.is-active{background:var(--dsw-alias-bg-layer-3);}',
+      '.pm-tree-row.is-dir{font-weight:500;}',
+      '.pm-tree-caret{width:12px;color:var(--dsw-alias-label-caption);}',
+      '.pm-tree-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-tree-kind{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-tree-loading{padding:12px;color:var(--dsw-alias-label-caption);}',
+      '.pm-tree-error{padding:10px;color:var(--dsw-alias-state-error-primary);font-size:12px;}',
+      '.pm-view-text{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;}',
+      '.pm-view-textarea{flex:1 1 auto;min-height:0;resize:none;border:0;outline:none;padding:10px 12px;background:transparent;color:inherit;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6;}',
+      '.pm-view-foot{flex:0 0 auto;padding:4px 12px;border-top:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-caption);font-size:11px;}',
+      '.pm-view-md{flex:1 1 auto;overflow:auto;padding:12px 16px;}',
+      '.pm-md p,.pm-md ul,.pm-md pre,.pm-md blockquote{margin:0 0 8px;}',
+      '.pm-md h1,.pm-md h2,.pm-md h3,.pm-md h4{margin:12px 0 6px;line-height:1.35;}',
+      '.pm-md h1{font-size:19px;}.pm-md h2{font-size:16px;}.pm-md h3{font-size:14px;}.pm-md h4{font-size:13px;}',
+      '.pm-md code{background:var(--dsw-alias-bg-layer-2);padding:1px 4px;border-radius:4px;font-size:12px;}',
+      '.pm-md-pre{background:var(--dsw-alias-bg-layer-2);padding:8px 10px;border-radius:var(--dsw-radius-sm);overflow:auto;}',
+      '.pm-md-quote{border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-view-image{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:10px;}',
+      '.pm-view-image img{max-width:100%;height:auto;}',
+      '.pm-view-pdf{flex:1 1 auto;min-height:0;border:0;width:100%;background:#fff;}',
+      '.pm-preview{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;}',
+      '.pm-preview-bar{display:flex;align-items:center;gap:6px;padding:5px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-preview-spacer{flex:1 1 auto;}',
+      '.pm-preview-pages{flex:1 1 auto;min-height:0;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px;}',
+      '.pm-preview-page{width:100%;height:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:#fff;}',
+      '.pm-preview-loading,.pm-view-loading{flex:1 1 auto;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--dsw-alias-label-caption);}',
+      '.pm-preview-error{padding:16px;display:flex;flex-direction:column;gap:6px;}',
+      '.pm-preview-error-title{font-weight:600;color:var(--dsw-alias-state-error-primary);}',
+      '.pm-preview-error-actions{display:flex;gap:6px;margin-top:6px;}',
+      '.pm-web-wrap{flex:1 1 auto;min-height:0;overflow:hidden;position:relative;}',
+      '.pm-web-frame{border:0;transform-origin:0 0;background:#fff;}',
+      '.pm-blocked{padding:16px;display:flex;flex-direction:column;gap:6px;}',
+      '.pm-blocked-title{font-weight:600;}',
+      '.pm-blocked-text{color:var(--dsw-alias-label-secondary);font-size:12px;max-width:520px;}',
+      '.pm-blocked-actions{display:flex;gap:6px;margin-top:4px;}',
+      '.pm-note-textarea{flex:1 1 auto;min-height:0;resize:none;border:0;outline:none;padding:10px 12px;background:transparent;color:inherit;font-size:12.5px;line-height:1.65;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}',
+      '.pm-reserved-body{flex:1 1 auto;margin:8px;padding:12px;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);display:flex;flex-direction:column;justify-content:center;gap:6px;}',
+      '.pm-reserved-title{font-weight:600;font-size:12.5px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-reserved-text{font-size:12px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-reserved-hint{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-chat-feed{flex:1 1 auto;min-height:0;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}',
+      '.pm-chat-empty{flex:1 1 auto;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-caption);font-size:12px;padding:12px;text-align:center;}',
+      '.pm-bubble{border-radius:var(--dsw-radius-md);padding:7px 9px;max-width:100%;background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-bubble.is-user{background:var(--dsw-alias-bg-layer-3);align-self:flex-end;max-width:88%;}',
+      '.pm-bubble.is-assistant{align-self:flex-start;max-width:94%;}',
+      '.pm-bubble-role{font-size:10.5px;color:var(--dsw-alias-label-caption);margin-bottom:3px;display:flex;gap:6px;}',
+      '.pm-bubble-body{font-size:12.5px;line-height:1.6;word-break:break-word;}',
+      '.pm-chat-running{display:flex;align-items:center;gap:6px;color:var(--dsw-alias-label-caption);font-size:11.5px;}',
+      '.pm-notices{flex:0 0 auto;padding:4px 10px;display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-notice{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-composer{position:relative;flex:0 0 auto;border-top:1px solid var(--dsw-alias-border-l1);padding:6px 8px 8px;display:flex;flex-direction:column;gap:5px;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-composer-input{width:100%;box-sizing:border-box;resize:none;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:inherit;padding:6px 8px;font-size:12.5px;line-height:1.5;outline:none;}',
+      '.pm-composer-input:focus{border-color:var(--dsw-alias-brand-primary);}',
+      '.pm-composer-bar{display:flex;align-items:center;gap:6px;}',
+      '.pm-composer-left,.pm-composer-right{display:flex;align-items:center;gap:4px;}',
+      '.pm-composer-right{margin-left:auto;}',
+      '.pm-chip-btn{height:22px;padding:0 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;cursor:pointer;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:background-color .12s,color .12s;}',
+      '.pm-chip-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
+      '.pm-chip-btn.is-model{color:var(--dsw-alias-brand-primary);border-color:transparent;}',
+      '.pm-send{width:28px;height:22px;border-radius:999px;border:0;background:var(--dsw-alias-brand-primary);color:#fff;cursor:pointer;font-size:13px;}',
+      '.pm-send:disabled{opacity:.4;}',
+      '.pm-picker{position:absolute;left:8px;right:8px;bottom:calc(100% - 4px);background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);box-shadow:var(--dsw-shadow-lv2);overflow:hidden;z-index:20;}',
+      '.pm-picker-title{font-size:11px;color:var(--dsw-alias-label-caption);padding:6px 10px 2px;}',
+      '.pm-picker-list{max-height:180px;overflow:auto;}',
+      '.pm-picker-item{display:flex;align-items:baseline;gap:8px;width:100%;border:0;background:transparent;color:inherit;text-align:left;padding:5px 10px;cursor:pointer;font-size:12px;}',
+      '.pm-picker-item.is-active,.pm-picker-item:hover{background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-picker-name{font-weight:500;}',
+      '.pm-picker-path{color:var(--dsw-alias-label-caption);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-session-list{flex:0 0 auto;max-height:200px;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l1);padding:6px 8px;display:flex;flex-direction:column;gap:4px;background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-session-head{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-session-item{display:flex;align-items:center;gap:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:var(--dsw-radius-sm);padding:4px 8px;cursor:pointer;color:inherit;font-size:12px;text-align:left;}',
+      '.pm-session-item.is-active{border-color:var(--dsw-alias-brand-primary);}',
+      '.pm-session-id{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-session-empty{font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;height:100%;padding:18px;color:var(--dsw-alias-label-caption);text-align:center;}',
+      '.pm-empty-title{font-size:12.5px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-empty-hint{font-size:11.5px;}',
+      '.pm-empty-scene{flex:1 1 auto;display:flex;align-items:center;justify-content:center;}',
+      '.pm-error{margin:8px 10px 0;padding:6px 10px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-error-primary);font-size:12px;}',
+      '.pm-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:6px 12px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv2);font-size:12px;z-index:40;max-width:70%;}',
+      '.pm-toast.is-error{color:var(--dsw-alias-state-error-primary);}',
+      '.pm-spinner{width:12px;height:12px;border-radius:999px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary);display:inline-block;animation:pm-spin .8s linear infinite;}',
+      '.pm-spinner.is-large{width:18px;height:18px;}',
       '@keyframes pm-spin{to{transform:rotate(360deg);}}',
-      '.pm-composer-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;padding:5px 8px;border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);}',
-      '.pm-composer-left,.pm-composer-right{display:flex;align-items:center;gap:4px;min-width:0;}',
-      '.pm-chip-btn{height:24px;padding:0 8px;font-size:11px;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-chip-btn.is-primary{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);}',
-      '.pm-picker{position:absolute;left:8px;right:8px;bottom:100%;margin-bottom:4px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);box-shadow:var(--dsw-elevation-panel);padding:4px;z-index:40;}',
-      '.pm-picker.is-menu{left:auto;right:8px;min-width:220px;}',
-      '.pm-picker-title{padding:4px 6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-picker-empty{padding:6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-picker-item{display:flex;align-items:baseline;gap:8px;width:100%;padding:5px 7px;border:0;background:transparent;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-primary);font-size:12px;text-align:left;cursor:pointer;}',
-      '.pm-picker-item.is-active,.pm-picker-item:hover{background:var(--dsw-alias-bg-layer-3);}',
-      '.pm-picker-name{flex:0 0 auto;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-picker-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-chat-notice{margin:2px 0 6px;padding:5px 8px;font-size:11.5px;line-height:1.5;border-left:2px solid var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2);border-radius:0 var(--dsw-radius-sm) var(--dsw-radius-sm) 0;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;}',
-      '.pm-chat-composer{position:relative;}',
-      '.pm-layout-select{height:24px;padding:0 4px;font-size:11.5px;border-radius:var(--dsw-radius-sm);max-width:190px;}',
-      '.pm-scene{gap:8px;}',
-      '.pm-scene > .pm-pane{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;}',
-      '.pm-scene-tag{display:flex;align-items:baseline;gap:8px;padding:4px 9px 0;font-size:11px;color:var(--dsw-alias-label-caption);flex:0 0 auto;min-width:0;}',
-      '.pm-scene-name{font-weight:600;color:var(--dsw-alias-label-secondary);flex:0 0 auto;}',
-      '.pm-scene-sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-reserved-body{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:6px;height:100%;padding:12px;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);margin:6px 8px 8px;}',
-      '.pm-reserved-title{margin:0;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
+      '.pm-modal{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px;}',
+      '.pm-modal-card{width:min(560px,94vw);max-height:86vh;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);box-shadow:var(--dsw-shadow-lv3);overflow:hidden;}',
+      '.pm-modal-card.is-wide{width:min(860px,94vw);}',
+      '.pm-modal-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-modal-title{margin:0;font-size:13.5px;}',
+      '.pm-modal-close{margin-left:auto;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:16px;cursor:pointer;}',
+      '.pm-modal-body{padding:12px 14px;overflow:auto;min-height:0;display:flex;flex-direction:column;gap:8px;}',
+      '.pm-modal-foot{display:flex;justify-content:flex-end;gap:6px;padding:8px 14px;border-top:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}',
+      '.pm-field{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-input{height:28px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:inherit;padding:0 8px;font-size:12.5px;outline:none;}',
+      '.pm-input:focus{border-color:var(--dsw-alias-brand-primary);}',
+      '.pm-form-hint{font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-code-textarea{width:100%;box-sizing:border-box;height:340px;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:inherit;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5;outline:none;}',
+      '.pm-version{display:flex;flex-direction:column;gap:10px;}',
+      '.pm-version-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}',
+      '.pm-version-name{font-size:15px;font-weight:600;}',
+      '.pm-version-sub{font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-version-path{font-size:10.5px;color:var(--dsw-alias-label-caption);word-break:break-all;max-width:46%;text-align:right;}',
+      '.pm-repo{display:flex;gap:6px;align-items:center;}',
+      '.pm-repo .pm-input{flex:1 1 auto;min-width:0;}',
+      '.pm-version-block{display:flex;flex-direction:column;gap:4px;}',
+      '.pm-version-block-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
+      '.pm-version-error{font-size:11.5px;color:var(--dsw-alias-state-error-primary);}',
+      '.pm-commit{display:flex;align-items:baseline;gap:8px;font-size:11.5px;}',
+      '.pm-commit-hash{font-family:ui-monospace,Consolas,monospace;color:var(--dsw-alias-state-business-primary);}',
+      '.pm-commit-subject{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-commit-meta{margin-left:auto;color:var(--dsw-alias-label-caption);white-space:nowrap;}',
+      '.pm-log-item{border-left:2px solid var(--dsw-alias-border-l2);padding-left:8px;display:flex;flex-direction:column;gap:2px;}',
+      '.pm-log-head{display:flex;gap:6px;align-items:baseline;font-size:12px;}',
+      '.pm-log-version{font-weight:600;}',
+      '.pm-log-title{color:var(--dsw-alias-label-secondary);}',
+      '.pm-log-date{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-log-changes{margin:2px 0 0;padding-left:16px;font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-history-row{display:flex;align-items:center;gap:8px;font-size:11.5px;}',
+      '.pm-history-main{display:flex;gap:8px;align-items:baseline;}',
+      '.pm-history-version{font-weight:600;}',
+      '.pm-history-kind{color:var(--dsw-alias-label-caption);}',
+      '.pm-history-at{color:var(--dsw-alias-label-caption);}',
+      '.pm-history-row .pm-btn{margin-left:auto;}',
+      '.pm-zoom-label{font-size:11px;color:var(--dsw-alias-label-caption);min-width:34px;text-align:center;}',
+      '.pm-scroll::-webkit-scrollbar{width:5px;height:5px;}',
+      '.pm-scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l1);border-radius:999px;}',
+      '.pm-scroll::-webkit-scrollbar-track{background:transparent;}'
     ].join('\n');
 
-    /* ------------------------------------------------------------ 注册 */
+    /* --------------------------------------------------------------- 注册 */
 
     return {
       inject: ['slots'],
       apply(ctx) {
-        const get = (name) => {
-          try {
-            return ctx.get(name) || null;
-          } catch {
-            return null;
-          }
-        };
-        let workspaceNav = null;
+        const Entry = (props) => h(Workbench, props);
         try {
-          workspaceNav = ctx.get('uiWorkspace') || null;
-        } catch {
-          workspaceNav = null;
-        }
-        const Entry = (props) => h(Workbench, { ...props, get, workspaceNav });
-        ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: PANEL_ID }, Entry));
-        ctx.slots.inject('sidebar.panellist', () =>
-          ctx.slots.register({
+          ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, Entry));
+          ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
             name: 'sidebar.panellist',
             id: PANEL_ID,
             order: 5,
             label: () => '大肥鱼'
           }, PanelIcon));
+        } catch (error) {
+          console.error('[dafeiyu] 注册面板失败', error);
+        }
       }
     };
   }
