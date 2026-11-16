@@ -1594,33 +1594,207 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /* ------------------------------ 站点模块 */
+    /* ------------------------------ 站点模块（2.2：自命名分区 + 多账号 + 面板内浏览） */
 
-    const SITE_ENV_LABEL = { test: '测试', prod: '正式', dev: '开发', custom: '自定义' };
-
-    function siteHost(url) {
-      try {
-        const parsed = new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url);
-        return parsed.host;
-      } catch (error) {
-        return String(url || '');
-      }
-    }
-
-    function statusOf(status) {
+    function toneOfStatus(status) {
       if (!status) return { tone: 'is-idle', text: '未探测' };
       if (status.ok) return { tone: 'is-ok', text: '正常 · ' + status.ms + 'ms' };
-      if (status.status) return { tone: 'is-down', text: 'HTTP ' + status.status + ' · ' + status.ms + 'ms' };
+      if (status.status) return { tone: 'is-down', text: 'HTTP ' + status.status };
       return { tone: 'is-down', text: status.error || '连不上' };
     }
 
-    /* 把用户粘进来的地址补全协议：内网/本机默认 http，其余默认 https */
-    function normalizeUrlInput(raw) {
-      const text = String(raw || '').trim();
-      if (!text) return '';
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return text;
-      if (/^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(text)) return 'http://' + text;
-      return 'https://' + text;
+    /** 账号列表：密码默认打码，点眼睛才显示；复制走剪贴板 */
+    function AccountList(props) {
+      const accounts = props.accounts || [];
+      const [shown, setShown] = useState({});
+      const say = props.say;
+      if (!accounts.length) return props.emptyHint || null;
+      return h('div', { className: 'pm-accounts' },
+        accounts.map((account) => h('div', { className: 'pm-account-row', key: account.id || account.label },
+          h('div', { className: 'pm-account-main' },
+            h('div', { className: 'pm-account-label' },
+              h('span', { className: 'pm-account-name' }, account.label || account.username || '账号'),
+              account.note ? h('span', { className: 'pm-muted' }, ' · ' + account.note) : null),
+            h('div', { className: 'pm-account-fields' },
+              h('span', { className: 'pm-account-user', title: '用户名' }, account.username || '（没填用户名）'),
+              h('span', { className: 'pm-account-pass', title: '密码' },
+                shown[account.id] ? (account.password || '（没填密码）') : maskSecret(account.password)))),
+          h('div', { className: 'pm-account-actions' },
+            account.username
+              ? h('button', {
+                className: 'pm-btn is-sm is-ghost',
+                onClick: async () => {
+                  const ok = await copyText(account.username);
+                  say(ok ? '用户名已复制' : '复制失败', ok ? 'ok' : 'error');
+                }
+              }, '复制用户名')
+              : null,
+            account.password
+              ? h('button', {
+                className: 'pm-btn is-sm is-ghost',
+                onClick: async () => {
+                  const ok = await copyText(account.password);
+                  say(ok ? '密码已复制' : '复制失败', ok ? 'ok' : 'error');
+                }
+              }, '复制密码')
+              : null,
+            account.password
+              ? h('button', {
+                className: 'pm-btn is-sm is-ghost',
+                onClick: () => setShown({ ...shown, [account.id]: !shown[account.id] })
+              }, shown[account.id] ? '隐藏' : '显示')
+              : null))));
+    }
+
+    function maskSecret(text) {
+      const value = String(text || '');
+      if (!value) return '（没填密码）';
+      return '•'.repeat(Math.min(10, Math.max(4, value.length)));
+    }
+
+    /** 账号编辑表：一行一个账号 */
+    function AccountEditor(props) {
+      const accounts = props.value || [];
+      const update = (id, patch) => props.onChange(accounts.map((one) => (one.id === id ? { ...one, ...patch } : one)));
+      const remove = (id) => props.onChange(accounts.filter((one) => one.id !== id));
+      const add = () => props.onChange(accounts.concat([{
+        id: 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        label: '',
+        username: '',
+        password: '',
+        note: ''
+      }]));
+      return h('div', { className: 'pm-account-editor' },
+        accounts.length
+          ? accounts.map((account) => h('div', { className: 'pm-account-edit-row', key: account.id },
+            h('input', {
+              className: 'pm-input',
+              value: account.label || '',
+              placeholder: '叫法（如：管理员）',
+              onChange: (event) => update(account.id, { label: event.target.value })
+            }),
+            h('input', {
+              className: 'pm-input',
+              value: account.username || '',
+              placeholder: '用户名 / 手机号',
+              onChange: (event) => update(account.id, { username: event.target.value })
+            }),
+            h('input', {
+              className: 'pm-input',
+              value: account.password || '',
+              placeholder: '密码（存在本机）',
+              onChange: (event) => update(account.id, { password: event.target.value })
+            }),
+            h('input', {
+              className: 'pm-input',
+              value: account.note || '',
+              placeholder: '备注（可不填）',
+              onChange: (event) => update(account.id, { note: event.target.value })
+            }),
+            h('button', {
+              className: 'pm-btn is-sm is-ghost is-danger',
+              title: '删掉这条账号',
+              onClick: () => remove(account.id)
+            }, '删除')))
+          : h('div', { className: 'pm-hint' }, '这个网站还没有记录账号；加了以后会自动填到面板里，方便你复制登录。'),
+        h('button', { className: 'pm-btn is-sm', onClick: add }, '＋ 加一个账号'));
+    }
+
+    /** 面板内浏览器：右上角可缩放、可复制账号、可回退到系统浏览器 */
+    function SiteViewer(props) {
+      const site = props.site;
+      const say = props.say;
+      const [zoom, setZoom] = useState(1);
+      const [reloadKey, setReloadKey] = useState(0);
+      const [loaded, setLoaded] = useState(false);
+      const [blocked, setBlocked] = useState(false);
+      const [showAccounts, setShowAccounts] = useState(false);
+      const loadedRef = useRef(false);
+
+      useEffect(() => {
+        loadedRef.current = false;
+        setLoaded(false);
+        setBlocked(false);
+        const timer = setTimeout(() => {
+          if (!loadedRef.current) setBlocked(true);
+        }, 7000);
+        return () => clearTimeout(timer);
+      }, [site.url, reloadKey]);
+
+      const accounts = site.accounts || [];
+      return h('div', { className: 'pm-modal pm-viewer' },
+        h('div', { className: 'pm-viewer-bar' },
+          h('div', { className: 'pm-viewer-title-row' },
+            h('span', { className: 'pm-viewer-title' }, site.name),
+            h('span', { className: 'pm-viewer-url' }, site.url),
+            blocked ? h('span', { className: 'pm-pill is-warn' }, '可能不允许内嵌') : null),
+          h('div', { className: 'pm-viewer-tools' },
+            accounts.length
+              ? h('button', {
+                className: 'pm-btn is-sm',
+                onClick: () => setShowAccounts(!showAccounts)
+              }, '账号 ' + accounts.length)
+              : null,
+            h('button', {
+              className: 'pm-btn is-sm is-ghost',
+              onClick: () => setZoom(Math.max(0.6, Number((zoom - 0.1).toFixed(2))))
+            }, '－'),
+            h('button', {
+              className: 'pm-btn is-sm is-ghost',
+              onClick: () => setZoom(Math.min(1.6, Number((zoom + 0.1).toFixed(2))))
+            }, '＋'),
+            h('span', { className: 'pm-viewer-zoom' }, Math.round(zoom * 100) + '%'),
+            h('button', {
+              className: 'pm-btn is-sm is-ghost',
+              onClick: () => setReloadKey(reloadKey + 1)
+            }, '刷新'),
+            h('button', {
+              className: 'pm-btn is-sm',
+              onClick: async () => {
+                try {
+                  await post('/openlink', { url: site.url });
+                } catch (error) {
+                  say('打开失败：' + msg(error), 'error');
+                }
+              }
+            }, '浏览器打开'),
+            h('button', { className: 'pm-btn is-sm is-ghost', onClick: props.onClose }, '关闭'))),
+        showAccounts && accounts.length
+          ? h('div', { className: 'pm-viewer-accounts' },
+            h('div', { className: 'pm-viewer-accounts-hint' }, '复制后粘进登录框；面板里的网页和你平时用的浏览器不共享登录状态。'),
+            h(AccountList, { accounts, say }))
+          : null,
+        h('div', { className: 'pm-viewer-frame-wrap' },
+          h('div', {
+            className: 'pm-viewer-frame',
+            style: { transform: 'scale(' + zoom + ')', width: (100 / zoom) + '%', height: (100 / zoom) + '%' }
+          },
+            h('iframe', {
+              key: reloadKey,
+              src: site.url,
+              title: site.name,
+              className: 'pm-viewer-iframe',
+              referrerPolicy: 'no-referrer',
+              allow: 'clipboard-read; clipboard-write; fullscreen',
+              onLoad: () => { loadedRef.current = true; setLoaded(true); }
+            })),
+          blocked
+            ? h('div', { className: 'pm-viewer-blocked' },
+              h('p', { className: 'pm-empty-title' }, '这个网站不让嵌在面板里'),
+              h('p', { className: 'pm-muted' }, '多数是站点自己设了 X-Frame-Options / CSP：浏览器的安全策略不允许被别的页面框住，插件改不了。'),
+              h('div', { className: 'pm-actions' },
+                h('button', {
+                  className: 'pm-btn is-primary',
+                  onClick: async () => {
+                    try {
+                      await post('/openlink', { url: site.url });
+                    } catch (error) {
+                      say('打开失败：' + msg(error), 'error');
+                    }
+                  }
+                }, '用系统浏览器打开'),
+                h('button', { className: 'pm-btn is-ghost', onClick: props.onClose }, '先关掉')))
+            : (loaded ? null : h('div', { className: 'pm-viewer-loading' }, h(Spinner), h('span', null, '正在加载 ' + siteHost(site.url) + ' …')))));
     }
 
     function SitesPane(props) {
@@ -1629,12 +1803,14 @@ window.__ModuleLoader__.load({
       const statuses = props.statuses || {};
       const say = props.say;
 
-      const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(false);
       const [probing, setProbing] = useState(false);
       const [groupDraft, setGroupDraft] = useState('');
       const [quick, setQuick] = useState({ groupId: '', url: '', name: '' });
       const [rowDraft, setRowDraft] = useState({});
+      const [editing, setEditing] = useState(null);
+      const [renaming, setRenaming] = useState(null);
+      const [viewing, setViewing] = useState(null);
 
       const openLink = useCallback(async (url) => {
         try {
@@ -1651,7 +1827,7 @@ window.__ModuleLoader__.load({
           props.onStatuses(value.statuses || {});
           const list = Object.keys(value.statuses || {}).map((key) => value.statuses[key]);
           const bad = list.filter((item) => !item.ok).length;
-          if (!list.length) say('这个分组还没有可探测的站点');
+          if (!list.length) say('还没有可探测的网站');
           else say(bad ? '探测完成：' + bad + ' 个不通' : '探测完成：全部正常', bad ? 'error' : 'ok');
         } catch (error) {
           say('探测失败：' + msg(error), 'error');
@@ -1668,8 +1844,7 @@ window.__ModuleLoader__.load({
             groups: nextGroups || groups
           });
           props.onSaved(value.groups || [], value.sites || []);
-          setEditing(null);
-          say('站点台账已保存');
+          say('已保存');
           return true;
         } catch (error) {
           say('保存失败：' + msg(error), 'error');
@@ -1679,39 +1854,43 @@ window.__ModuleLoader__.load({
         }
       }, [groups, props, say, sites]);
 
-      const defaultGroupId = () => (quick.groupId || (groups[0] && groups[0].id) || 'test');
+      const firstGroupId = () => (groups[0] && groups[0].id) || 'default';
+      const groupIdOf = (id) => (groups.some((one) => one.id === id) ? id : firstGroupId());
+      const quickGroupId = quick.groupId || firstGroupId();
 
       const startAdd = (groupId) => setEditing({
         id: '',
-        groupId: groupId || defaultGroupId(),
+        groupId: groupIdOf(groupId || quickGroupId),
         name: '',
         url: '',
         note: '',
-        check: true
+        accounts: []
       });
 
-      /* 直接往某个环境下加一条：地址必填，名称留空就用域名 */
+      const startEdit = (site) => setEditing({
+        ...site,
+        accounts: (site.accounts || []).map((one) => ({ ...one }))
+      });
+
       const addSite = async (groupId, rawUrl, rawName) => {
         const url = normalizeUrlInput(rawUrl);
         if (!url) {
-          say('先填站点地址', 'error');
+          say('先填网站地址', 'error');
           return false;
         }
-        const item = {
+        return save(sites.concat([{
           id: '',
-          groupId: groupId || defaultGroupId(),
+          groupId: groupIdOf(groupId),
           name: String(rawName || '').trim() || siteHost(url),
           url,
           note: '',
-          check: true
-        };
-        return save(sites.concat([item]), groups);
+          accounts: []
+        }]), groups);
       };
 
       const quickAdd = async () => {
-        const groupId = quick.groupId || defaultGroupId();
-        const ok = await addSite(groupId, quick.url, quick.name);
-        if (ok) setQuick({ groupId, url: '', name: '' });
+        const ok = await addSite(quickGroupId, quick.url, quick.name);
+        if (ok) setQuick({ groupId: quick.groupId, url: '', name: '' });
       };
 
       const rowAdd = async (groupId) => {
@@ -1728,23 +1907,25 @@ window.__ModuleLoader__.load({
         if (!editing) return;
         const url = normalizeUrlInput(editing.url);
         if (!url) {
-          say('先填站点地址', 'error');
+          say('先填网站地址', 'error');
           return;
         }
         const item = {
           ...editing,
           url,
-          name: String(editing.name || '').trim() || siteHost(url)
+          name: String(editing.name || '').trim() || siteHost(url),
+          accounts: (editing.accounts || []).filter((one) => one.username || one.password || one.label)
         };
         const exists = sites.some((one) => one.id === item.id);
         const nextSites = exists
           ? sites.map((one) => (one.id === item.id ? { ...one, ...item } : one))
           : sites.concat([{ ...item, id: '' }]);
-        await save(nextSites, groups);
+        const ok = await save(nextSites, groups);
+        if (ok) setEditing(null);
       };
 
       const remove = async (site) => {
-        const ok = await props.ask('删除站点「' + site.name + '」？（只从台账移除，不影响网站）');
+        const ok = await props.ask('删除「' + site.name + '」？（只从台账移除，不影响网站本身）');
         if (!ok) return;
         await save(sites.filter((one) => one.id !== site.id), groups);
       };
@@ -1752,72 +1933,71 @@ window.__ModuleLoader__.load({
       const addGroup = async () => {
         const name = groupDraft.trim();
         if (!name) return;
-        const next = groups.concat([{
+        setGroupDraft('');
+        await save(sites, groups.concat([{
           id: 'g' + Date.now().toString(36),
           name,
-          env: 'custom',
+          note: '',
           order: groups.length
-        }]);
-        setGroupDraft('');
-        await save(sites, next);
+        }]));
+      };
+
+      const renameGroup = async () => {
+        if (!renaming) return;
+        const name = String(renaming.name || '').trim();
+        if (!name) return;
+        const ok = await save(sites, groups.map((one) => (one.id === renaming.id ? { ...one, name } : one)));
+        if (ok) setRenaming(null);
       };
 
       const removeGroup = async (group) => {
         if (groups.length <= 1) {
-          say('至少要留一个分组', 'error');
+          say('至少要留一个分区', 'error');
           return;
         }
         const members = sites.filter((one) => one.groupId === group.id);
-        const ok = await props.ask('删除分组「' + group.name + '」？' +
-          (members.length ? '里面的 ' + members.length + ' 个站点会移到第一个分组。' : ''));
+        const ok = await props.ask('删掉分区「' + group.name + '」？' +
+          (members.length ? '里面的 ' + members.length + ' 个网站会挪到第一个分区，不会丢。' : ''));
         if (!ok) return;
-        const fallback = groups.find((one) => one.id !== group.id);
-        const nextSites = sites.map((one) => (one.groupId === group.id ? { ...one, groupId: fallback.id } : one));
+        const fallback = groups.find((one) => one.id !== group.id).id;
+        const nextSites = sites.map((one) => (one.groupId === group.id ? { ...one, groupId: fallback } : one));
         await save(nextSites, groups.filter((one) => one.id !== group.id));
       };
 
       const okCount = Object.keys(statuses).filter((key) => statuses[key] && statuses[key].ok).length;
       const downCount = Object.keys(statuses).filter((key) => statuses[key] && !statuses[key].ok).length;
-      const quickGroupId = quick.groupId || (groups[0] && groups[0].id) || '';
+      const viewingSite = viewing ? sites.find((one) => one.id === viewing.siteId) : null;
 
-      return h('div', {
-        className: 'pm-main pm-sites',
-        style: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, gap: 10 }
-      },
+      return h('div', { className: 'pm-main pm-sites' },
         h('header', { className: 'pm-head' },
           h('div', { className: 'pm-head-main' },
             h('div', { className: 'pm-head-title-row' },
               h('span', { className: 'pm-title' }, '站点'),
-              h('span', { className: 'pm-pill is-ok' }, sites.length + ' 个站点'),
+              h('span', { className: 'pm-pill' }, groups.length + ' 个分区'),
+              h('span', { className: 'pm-pill' }, sites.length + ' 个网站'),
               okCount ? h('span', { className: 'pm-pill is-ok' }, '正常 ' + okCount) : null,
               downCount ? h('span', { className: 'pm-pill is-warn' }, '不通 ' + downCount) : null),
-            h('div', { className: 'pm-muted' }, '按环境分组记地址，点名称就用默认浏览器打开；状态灯由本机探测，测不通多半是内网或要登录。')),
+            h('div', { className: 'pm-muted' }, '分区名字你自己起（测试、正式、内网都行）；每个网站可以记多条账号；点网站名在面板里直接打开。')),
           h('div', { className: 'pm-head-actions' },
             h('button', {
               className: 'pm-btn',
               onClick: () => probe([]),
-              disabled: probing || !sites.length,
-              title: '重新探测全部站点'
+              disabled: probing || !sites.length
             }, probing ? h(Spinner) : null, '全部探测'),
-            h('button', {
-              className: 'pm-btn is-ghost',
-              title: '打开完整表单，可以同时填名称和备注',
-              onClick: () => setEditing({ id: '', groupId: quickGroupId || 'test', name: '', url: '', note: '', check: true })
-            }, '详细填写'),
-            h('button', { className: 'pm-btn is-primary', onClick: () => startAdd(quickGroupId) }, '＋ 添加站点'))),
+            h('button', { className: 'pm-btn is-primary', onClick: () => startAdd(quickGroupId) }, '＋ 添加网站'))),
 
         h('div', { className: 'pm-card pm-quickadd' },
           h('span', { className: 'pm-quickadd-label' }, '快速添加'),
           h('select', {
             className: 'pm-input pm-quickadd-group',
             value: quickGroupId,
-            title: '放进哪个环境',
+            title: '放进哪个分区',
             onChange: (event) => setQuick({ ...quick, groupId: event.target.value })
           }, groups.map((group) => h('option', { key: group.id, value: group.id }, group.name))),
           h('input', {
             className: 'pm-input pm-quickadd-url',
             value: quick.url || '',
-            placeholder: '把网址粘到这里，回车就加进去（不带 https 也行）',
+            placeholder: '粘网址，回车就加（不带 https 也行）',
             onChange: (event) => setQuick({ ...quick, url: event.target.value }),
             onKeyDown: (event) => {
               if (event.key === 'Enter') quickAdd();
@@ -1837,122 +2017,165 @@ window.__ModuleLoader__.load({
             disabled: busy || !String(quick.url || '').trim()
           }, busy ? h(Spinner) : null, '添加')),
 
-        editing
-          ? h('div', { className: 'pm-card pm-site-form' },
-            h('div', { className: 'pm-form-grid' },
-              h('label', null, '名称'),
-              h('input', {
-                className: 'pm-input',
-                value: editing.name || '',
-                placeholder: '例如：订单系统 · 测试',
-                autoFocus: true,
-                onChange: (event) => setEditing({ ...editing, name: event.target.value })
-              }),
-              h('label', null, '地址'),
-              h('input', {
-                className: 'pm-input',
-                value: editing.url || '',
-                placeholder: 'https://test.example.com',
-                onChange: (event) => setEditing({ ...editing, url: event.target.value }),
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter') commit();
-                  if (event.key === 'Escape') setEditing(null);
-                }
-              }),
-              h('label', null, '分组'),
-              h('select', {
-                className: 'pm-input',
-                value: editing.groupId || (groups[0] && groups[0].id) || '',
-                onChange: (event) => setEditing({ ...editing, groupId: event.target.value })
-              }, groups.map((group) => h('option', { key: group.id, value: group.id }, group.name))),
-              h('label', null, '备注'),
-              h('input', {
-                className: 'pm-input',
-                value: editing.note || '',
-                placeholder: '用途、账号提示等（可不填）',
-                onChange: (event) => setEditing({ ...editing, note: event.target.value })
-              })),
-            h('div', { className: 'pm-actions' },
-              h('button', { className: 'pm-btn is-primary', onClick: commit, disabled: busy }, busy ? h(Spinner) : null, '保存'),
-              h('button', { className: 'pm-btn is-ghost', onClick: () => setEditing(null) }, '取消')))
-          : null,
-
         h('div', { className: 'pm-scroll' },
           groups.map((group) => {
             const items = sites.filter((item) => item.groupId === group.id);
             const draft = rowDraft[group.id] || '';
+            const isRenaming = renaming && renaming.id === group.id;
             return h('section', { className: 'pm-group', key: group.id },
               h('div', { className: 'pm-group-head' },
-                h('span', { className: 'pm-group-name' }, group.name),
-                h('span', { className: 'pm-chip is-on' }, SITE_ENV_LABEL[group.env] || '自定义'),
-                h('span', { className: 'pm-muted' }, items.length + ' 个站点'),
+                isRenaming
+                  ? h('input', {
+                    className: 'pm-input pm-group-rename',
+                    value: renaming.name,
+                    autoFocus: true,
+                    onChange: (event) => setRenaming({ ...renaming, name: event.target.value }),
+                    onKeyDown: (event) => {
+                      if (event.key === 'Enter') renameGroup();
+                      if (event.key === 'Escape') setRenaming(null);
+                    }
+                  })
+                  : h('button', {
+                    className: 'pm-group-name',
+                    title: '点一下改名字',
+                    onClick: () => setRenaming({ id: group.id, name: group.name })
+                  }, group.name),
+                h('span', { className: 'pm-muted' }, items.length + ' 个网站'),
                 h('div', { className: 'pm-group-actions' },
+                  isRenaming
+                    ? h('button', { className: 'pm-btn is-sm is-primary', onClick: renameGroup }, '保存名字')
+                    : null,
                   h('button', {
-                    className: 'pm-btn is-ghost',
+                    className: 'pm-btn is-sm is-ghost',
                     disabled: probing || !items.length,
                     onClick: () => probe(items.map((item) => item.id))
-                  }, '探测本组'),
-                  h('button', { className: 'pm-btn is-ghost', onClick: () => startAdd(group.id) }, '＋ 添加'),
-                  h('button', { className: 'pm-btn is-ghost', onClick: () => removeGroup(group) }, '删分组'))),
+                  }, '探测'),
+                  h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => startAdd(group.id) }, '＋ 网站'),
+                  h('button', { className: 'pm-btn is-sm is-ghost is-danger', onClick: () => removeGroup(group) }, '删分区'))),
               items.length
-                ? items.map((site) => {
-                  const status = statusOf(statuses[site.id]);
-                  return h('div', { className: 'pm-site-row', key: site.id },
-                    h('span', { className: 'pm-dot ' + status.tone, title: status.text }),
-                    h('div', { className: 'pm-site-main' },
+                ? h('div', { className: 'pm-site-grid' },
+                  items.map((site) => {
+                    const status = toneOfStatus(statuses[site.id]);
+                    const accounts = site.accounts || [];
+                    return h('article', { className: 'pm-site-card', key: site.id },
+                      h('div', { className: 'pm-site-card-head' },
+                        h('span', { className: 'pm-dot ' + status.tone, title: status.text }),
+                        h('button', {
+                          className: 'pm-site-card-name',
+                          title: '在面板里打开',
+                          onClick: () => setViewing({ siteId: site.id })
+                        }, site.name),
+                        accounts.length ? h('span', { className: 'pm-chip is-on' }, accounts.length + ' 账号') : null),
                       h('button', {
-                        className: 'pm-site-name',
-                        title: '用默认浏览器打开 ' + site.url,
-                        onClick: () => openLink(site.url)
-                      }, site.name),
-                      h('div', { className: 'pm-site-meta' },
-                        h('span', { className: 'pm-site-url', title: site.url }, site.url),
-                        site.note ? h('span', { className: 'pm-site-note' }, '· ' + site.note) : null)),
-                    h('span', { className: 'pm-site-status ' + status.tone }, status.text),
-                    h('div', { className: 'pm-site-actions' },
-                      h('button', { className: 'pm-btn is-ghost', onClick: () => openLink(site.url) }, '打开'),
-                      h('button', { className: 'pm-btn is-ghost', title: '复制地址', onClick: () => copyUrl(site) }, '复制'),
-                      h('button', { className: 'pm-btn is-ghost', onClick: () => probe([site.id]) }, '探测'),
-                      h('button', { className: 'pm-btn is-ghost', onClick: () => setEditing({ ...site }) }, '编辑'),
-                      h('button', { className: 'pm-btn is-ghost is-danger', onClick: () => remove(site) }, '删除')));
-                })
-                : h('div', { className: 'pm-hint' }, '这个环境还没有站点，用下边一栏直接加一条'),
+                        className: 'pm-site-card-url',
+                        title: '复制地址',
+                        onClick: () => copyUrl(site)
+                      }, siteHost(site.url)),
+                      site.note ? h('div', { className: 'pm-site-card-note' }, site.note) : null,
+                      h('div', { className: 'pm-site-card-status ' + status.tone }, status.text),
+                      h('div', { className: 'pm-site-card-actions' },
+                        h('button', {
+                          className: 'pm-btn is-sm is-primary',
+                          onClick: () => setViewing({ siteId: site.id })
+                        }, '打开面板'),
+                        h('button', { className: 'pm-btn is-sm', onClick: () => openLink(site.url) }, '浏览器'),
+                        h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => startEdit(site) }, '编辑'),
+                        h('button', { className: 'pm-btn is-sm is-ghost is-danger', onClick: () => remove(site) }, '删除')));
+                  }))
+                : h('div', { className: 'pm-hint' }, '这个分区还没有网站，下面一栏直接粘地址就能加。'),
               h('div', { className: 'pm-group-add-row' },
                 h('input', {
                   className: 'pm-input',
                   value: draft,
-                  placeholder: '在这个环境里加一条：粘贴网址后回车',
+                  placeholder: '往「' + group.name + '」里加一个：粘网址后回车',
                   onChange: (event) => setRowDraft({ ...rowDraft, [group.id]: event.target.value }),
                   onKeyDown: (event) => {
                     if (event.key === 'Enter') rowAdd(group.id);
                   }
                 }),
                 h('button', {
-                  className: 'pm-btn is-primary',
+                  className: 'pm-btn is-sm is-primary',
                   disabled: busy || !draft.trim(),
                   onClick: () => rowAdd(group.id)
                 }, '添加')));
           }),
           h('div', { className: 'pm-group pm-group-add' },
             h('div', { className: 'pm-group-head' },
-              h('span', { className: 'pm-group-name' }, '新增环境分组'),
-              h('span', { className: 'pm-muted' }, '例如：预发、内网、客户验收')),
+              h('span', { className: 'pm-group-name' }, '新建分区'),
+              h('span', { className: 'pm-muted' }, '一个分区放一批网站，名字随你起')),
             h('div', { className: 'pm-actions' },
               h('input', {
                 className: 'pm-input',
                 value: groupDraft,
-                placeholder: '分组名称',
+                placeholder: '分区名称，例如：客户验收、内网系统',
                 onChange: (event) => setGroupDraft(event.target.value),
                 onKeyDown: (event) => {
                   if (event.key === 'Enter') addGroup();
                 }
               }),
-              h('button', { className: 'pm-btn', onClick: addGroup, disabled: busy || !groupDraft.trim() }, '添加分组'))),
+              h('button', { className: 'pm-btn', onClick: addGroup, disabled: busy || !groupDraft.trim() }, '添加分区'))),
           !sites.length
             ? h('div', { className: 'pm-empty' },
-              h('p', { className: 'pm-empty-title' }, '还没有站点'),
-              h('p', { className: 'pm-muted' }, '上边「快速添加」直接粘地址就行；每个环境分组里也有一栏，可以就地加。'))
-            : null)
+              h('p', { className: 'pm-empty-title' }, '还没有网站'),
+              h('p', { className: 'pm-muted' }, '上边「快速添加」粘个地址回车就行；也可以先建一个分区，再往里加。'))
+            : null),
+
+        editing
+          ? h('div', { className: 'pm-modal pm-editor' },
+            h('div', { className: 'pm-modal-card' },
+              h('div', { className: 'pm-modal-head' },
+                h('span', { className: 'pm-modal-title' }, editing.id ? '编辑网站' : '添加网站'),
+                h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => setEditing(null) }, '关闭')),
+              h('div', { className: 'pm-form-grid' },
+                h('label', null, '名称'),
+                h('input', {
+                  className: 'pm-input',
+                  value: editing.name || '',
+                  placeholder: '例如：订单后台',
+                  autoFocus: true,
+                  onChange: (event) => setEditing({ ...editing, name: event.target.value })
+                }),
+                h('label', null, '地址'),
+                h('input', {
+                  className: 'pm-input',
+                  value: editing.url || '',
+                  placeholder: 'https://test.example.com',
+                  onChange: (event) => setEditing({ ...editing, url: event.target.value }),
+                  onKeyDown: (event) => { if (event.key === 'Enter') commit(); }
+                }),
+                h('label', null, '分区'),
+                h('select', {
+                  className: 'pm-input',
+                  value: groupIdOf(editing.groupId),
+                  onChange: (event) => setEditing({ ...editing, groupId: event.target.value })
+                }, groups.map((group) => h('option', { key: group.id, value: group.id }, group.name))),
+                h('label', null, '备注'),
+                h('input', {
+                  className: 'pm-input',
+                  value: editing.note || '',
+                  placeholder: '用途、找谁要权限等（可不填）',
+                  onChange: (event) => setEditing({ ...editing, note: event.target.value })
+                })),
+              h('div', { className: 'pm-modal-section' },
+                h('div', { className: 'pm-modal-section-title' }, '登录账号'),
+                h('div', { className: 'pm-hint' }, '账号密码只存在本机数据目录里（明文本地保存），不会上传；复制后自己粘到登录框。'),
+                h(AccountEditor, {
+                  value: editing.accounts || [],
+                  onChange: (accounts) => setEditing({ ...editing, accounts })
+                })),
+              h('div', { className: 'pm-actions' },
+                h('button', { className: 'pm-btn is-primary', onClick: commit, disabled: busy }, busy ? h(Spinner) : null, '保存'),
+                h('button', { className: 'pm-btn is-ghost', onClick: () => setEditing(null) }, '取消')))
+          )
+          : null,
+
+        viewingSite
+          ? h(SiteViewer, {
+            site: viewingSite,
+            say,
+            onClose: () => setViewing(null)
+          })
+          : null
       );
     }
 
@@ -2495,42 +2718,42 @@ window.__ModuleLoader__.load({
     const CSS = [
       '.pm-root{display:grid;grid-template-columns:216px minmax(0,1fr);height:100%;min-height:0;box-sizing:border-box;padding:calc(var(--dsh-frame-top-clearance,0px) + 6px) 12px 10px;gap:10px;color:var(--dsw-alias-label-primary);font-size:13px;background:var(--dsw-alias-bg-base);}',
       '.pm-icon{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--dsw-specific-sidebar-fill,currentColor);}',
-      '.pm-rail{display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
+      '.pm-rail{display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
       '.pm-rail-head{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-bottom:1px solid var(--dsw-alias-border-l1);font-weight:600;font-size:12px;color:var(--dsw-alias-label-secondary);letter-spacing:.02em;}',
       '.pm-rail-count{font-weight:400;color:var(--dsw-alias-label-caption);}',
       '.pm-rail-list{flex:1;min-height:0;overflow:auto;padding:6px;}',
-      '.pm-proj{display:flex;flex-direction:column;gap:3px;width:100%;padding:7px 8px;margin-bottom:2px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer;}',
+      '.pm-proj{display:flex;flex-direction:column;gap:3px;width:100%;padding:7px 8px;margin-bottom:2px;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer;}',
       '.pm-proj:hover{background:var(--dsw-alias-bg-layer-2);}',
       '.pm-proj.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
       '.pm-proj-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-proj-foot{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
-      '.pm-proj-warn{color:#d98b5f;}',
+      '.pm-proj-warn{color:var(--dsw-alias-state-warn-primary);}',
       '.pm-rail-foot{padding:8px;border-top:1px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:6px;}',
       '.pm-rail-foot-row{display:flex;gap:6px;justify-content:space-between;}',
       '.pm-rail-head-right{display:flex;align-items:center;gap:6px;}',
-      '.pm-icon-btn{padding:2px 8px;font-size:11px;line-height:1.5;border-radius:6px;}',
-      '.pm-modal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.34);z-index:60;border-radius:10px;}',
-      '.pm-modal-card{min-width:290px;max-width:min(430px,86%);padding:16px 16px 12px;border-radius:10px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);box-shadow:0 14px 36px rgba(0,0,0,.3);}',
+      '.pm-icon-btn{padding:2px 8px;font-size:11px;line-height:1.5;border-radius:var(--dsw-radius-sm);}',
+      '.pm-modal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.34);z-index:60;border-radius:var(--dsw-radius-sm);}',
+      '.pm-modal-card{min-width:290px;max-width:min(430px,86%);padding:16px 16px 12px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv3);}',
       '.pm-modal-text{margin:0 0 14px;font-size:13px;line-height:1.55;color:var(--dsw-alias-label-primary);}',
       '.pm-modal-actions{display:flex;justify-content:flex-end;gap:8px;}',
       '.pm-manual{padding:8px;border-top:1px solid var(--dsw-alias-border-l1);display:flex;flex-direction:column;gap:6px;}',
       '.pm-main{display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px;}',
       '.pm-rail,.pm-head,.pm-notes,.pm-pane,.pm-main-empty{backdrop-filter:blur(18px) saturate(1.06);-webkit-backdrop-filter:blur(18px) saturate(1.06);}',
-      '.pm-main-empty{justify-content:center;align-items:center;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);}',
-      '.pm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-main-empty{justify-content:center;align-items:center;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
       '.pm-head-main{display:flex;flex-direction:column;gap:4px;min-width:0;}',
       '.pm-head-title-row{display:flex;align-items:center;gap:8px;min-width:0;}',
       '.pm-title{padding:0;border:none;background:transparent;color:inherit;font:inherit;font-size:15px;font-weight:600;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px;}',
       '.pm-title:hover{text-decoration:underline dotted;}',
-      '.pm-path{padding:0;border:none;background:transparent;color:var(--dsw-alias-label-caption);font:inherit;font-size:11.5px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}',
+      '.pm-path{padding:0;border:none;background:transparent;color:var(--dsw-alias-label-caption);font:inherit;font-size:11px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}',
       '.pm-path:hover{color:var(--dsw-alias-label-secondary);}',
       '.pm-head-stats{display:flex;gap:10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-head-actions{display:flex;gap:6px;flex:none;}',
-      '.pm-pill{padding:1px 7px;border-radius:99px;font-size:10.5px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-caption);white-space:nowrap;}',
-      '.pm-pill.is-ok{color:#5aa87a;border-color:rgba(90,168,122,.45);}',
+      '.pm-pill{padding:1px 7px;border-radius:999px;font-size:11px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-caption);white-space:nowrap;}',
+      '.pm-pill.is-ok{color:var(--dsw-alias-state-success-primary);border-color:rgba(90,168,122,.45);}',
       '.pm-pill.is-idle{color:var(--dsw-alias-label-caption);}',
-      '.pm-pill.is-warn{color:#d98b5f;border-color:rgba(217,139,95,.45);}',
-      '.pm-notes{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-pill.is-warn{color:var(--dsw-alias-state-warn-primary);border-color:rgba(217,139,95,.45);}',
+      '.pm-notes{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
       '.pm-body{display:grid;grid-template-columns:minmax(170px,244px) minmax(0,1fr) minmax(286px,356px);gap:10px;flex:1;min-height:0;}',
       '.pm-body.no-files{grid-template-columns:minmax(0,1fr) minmax(286px,356px);}',
       '.pm-body.no-agent{grid-template-columns:minmax(170px,244px) minmax(0,1fr);}',
@@ -2543,45 +2766,45 @@ window.__ModuleLoader__.load({
       '.pm-quickadd-name{flex:0 0 132px;width:132px;}',
       '.pm-group-add-row{display:flex;gap:6px;padding-top:2px;}',
       '.pm-group-add-row .pm-input{flex:1 1 auto;min-width:0;}',
-      '.pm-pane{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
+      '.pm-pane{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
       '.pm-pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);min-height:34px;box-sizing:border-box;}',
       '.pm-pane-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-pane-sub{font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-pane-tools{display:flex;gap:4px;flex:none;}',
       '.pm-pane-body{flex:1;min-height:0;overflow:auto;padding:6px;}',
-      '.pm-pane-foot{padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1);font-size:10.5px;color:var(--dsw-alias-label-caption);min-height:20px;box-sizing:border-box;}',
+      '.pm-pane-foot{padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1);font-size:11px;color:var(--dsw-alias-label-caption);min-height:20px;box-sizing:border-box;}',
       '.pm-tree{display:flex;flex-direction:column;gap:1px;}',
-      '.pm-tree-row{display:flex;align-items:center;gap:6px;width:100%;height:24px;padding:0 6px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;text-align:left;cursor:pointer;}',
+      '.pm-tree-row{display:flex;align-items:center;gap:6px;width:100%;height:24px;padding:0 6px;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;}',
       '.pm-tree-row:hover{background:var(--dsw-alias-bg-layer-2);}',
       '.pm-tree-row.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
       '.pm-caret{width:10px;flex:none;font-size:9px;color:var(--dsw-alias-label-caption);}',
       '.pm-badge{flex:none;min-width:26px;text-align:center;font-size:9px;letter-spacing:.02em;padding:1px 3px;border-radius:3px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-caption);}',
-      '.pm-badge.t-doc{color:#6f9ef0;}',
-      '.pm-badge.t-xls{color:#5aa87a;}',
-      '.pm-badge.t-ppt{color:#d99a5f;}',
-      '.pm-badge.t-pdf{color:#d97a7a;}',
+      '.pm-badge.t-doc{color:var(--dsw-alias-state-business-primary);}',
+      '.pm-badge.t-xls{color:var(--dsw-alias-state-success-primary);}',
+      '.pm-badge.t-ppt{color:var(--dsw-alias-state-warn-primary);}',
+      '.pm-badge.t-pdf{color:var(--dsw-alias-state-error-primary);}',
       '.pm-badge.t-img{color:#a884d8;}',
       '.pm-tree-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-editor-body{flex:1;min-height:0;overflow:auto;display:flex;}',
-      '.pm-textarea{flex:1;width:100%;min-height:100%;box-sizing:border-box;resize:none;border:none;outline:none;background:transparent;color:inherit;font-family:ui-monospace,SFMono-Regular,Consolas,"Cascadia Code",Menlo,monospace;font-size:12.5px;line-height:1.62;padding:10px 12px;tab-size:2;}',
-      '.pm-editor-foot{display:flex;gap:12px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1);font-size:10.5px;color:var(--dsw-alias-label-caption);min-height:20px;box-sizing:border-box;}',
-      '.pm-dirty{color:#d99a5f;}',
-      '.pm-editor-name{max-width:60%;font-size:12.5px;color:var(--dsw-alias-label-primary);}',
+      '.pm-textarea{flex:1;width:100%;min-height:100%;box-sizing:border-box;resize:none;border:none;outline:none;background:transparent;color:inherit;font-family:ui-monospace,SFMono-Regular,Consolas,"Cascadia Code",Menlo,monospace;font-size:12px;line-height:1.62;padding:10px 12px;tab-size:2;}',
+      '.pm-editor-foot{display:flex;gap:12px;padding:4px 10px;border-top:1px solid var(--dsw-alias-border-l1);font-size:11px;color:var(--dsw-alias-label-caption);min-height:20px;box-sizing:border-box;}',
+      '.pm-dirty{color:var(--dsw-alias-state-warn-primary);}',
+      '.pm-editor-name{max-width:60%;font-size:12px;color:var(--dsw-alias-label-primary);}',
       '.pm-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:20px;text-align:center;}',
       '.pm-empty-title{font-size:13px;font-weight:600;margin:0;}',
       '.pm-empty-small{padding:10px;font-size:12px;color:var(--dsw-alias-label-secondary);text-align:center;}',
-      '.pm-muted{color:var(--dsw-alias-label-caption);font-size:11.5px;margin:0;}',
+      '.pm-muted{color:var(--dsw-alias-label-caption);font-size:11px;margin:0;}',
       '.pm-image-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto;background:var(--dsw-alias-bg-base);}',
-      '.pm-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;}',
+      '.pm-image{max-width:100%;max-height:100%;object-fit:contain;border-radius:var(--dsw-radius-sm);}',
       '.pm-pdf-wrap{flex:1;display:flex;min-height:0;background:var(--dsw-alias-bg-base);}',
       '.pm-pdf{flex:1;border:none;width:100%;height:100%;}',
       '.pm-doc{flex:1;display:flex;flex-direction:column;min-height:0;}',
       '.pm-doc-scroll{flex:1;overflow:auto;padding:14px 16px 6px;display:flex;flex-direction:column;align-items:center;gap:14px;}',
       '.pm-page-wrap{margin:0;display:flex;flex-direction:column;align-items:center;gap:5px;max-width:100%;}',
-      '.pm-page{max-width:100%;height:auto;display:block;border-radius:5px;background:#fff;box-shadow:0 8px 22px rgba(0,0,0,.22);}',
-      '.pm-page-cap{font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-page{max-width:100%;height:auto;display:block;border-radius:5px;background:#fff;box-shadow:var(--dsw-shadow-lv3);}',
+      '.pm-page-cap{font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-doc-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:4px 12px 6px;}',
-      '.pm-doc-note{font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-doc-note{font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-doc-loading{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:20px;text-align:center;}',
       '.pm-doc-loading-text{display:flex;flex-direction:column;gap:3px;align-items:center;}',
       '.pm-empty-actions{display:flex;gap:6px;margin-top:4px;}',
@@ -2592,23 +2815,23 @@ window.__ModuleLoader__.load({
       '.pm-md-list{margin:6px 0 6px 18px;padding:0;}',
       '.pm-md-list li{margin:2px 0;}',
       '.pm-quote{margin:8px 0;padding:2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);}',
-      '.pm-pre{margin:8px 0;padding:9px 11px;border-radius:7px;background:var(--dsw-alias-bg-layer-2);overflow:auto;font-size:12px;line-height:1.55;}',
-      '.pm-code{padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-family:ui-monospace,Consolas,monospace;font-size:11.5px;}',
+      '.pm-pre{margin:8px 0;padding:9px 11px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);overflow:auto;font-size:12px;line-height:1.55;}',
+      '.pm-code{padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-family:ui-monospace,Consolas,monospace;font-size:11px;}',
       '.pm-table{border-collapse:collapse;margin:8px 0;font-size:12px;}',
       '.pm-table th,.pm-table td{border:1px solid var(--dsw-alias-border-l1);padding:4px 8px;text-align:left;}',
       '.pm-table th{background:var(--dsw-alias-bg-layer-2);font-weight:600;}',
       '.pm-agent-body{display:flex;flex-direction:column;gap:8px;padding:8px;}',
-      '.pm-card{border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-2);padding:9px 10px;display:flex;flex-direction:column;gap:6px;}',
+      '.pm-card{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);padding:9px 10px;display:flex;flex-direction:column;gap:6px;}',
       '.pm-card-grow{flex:1;min-height:0;overflow:auto;}',
       '.pm-card-head{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
       '.pm-card-title{font-size:12px;font-weight:600;}',
       '.pm-card-note{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.5;}',
-      '.pm-card-hint{margin:0;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-card-hint{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-repo{display:flex;align-items:center;gap:6px;margin:6px 0 2px;}',
-      '.pm-repo .pm-input{flex:1 1 auto;min-width:0;font-size:11.5px;}',
+      '.pm-repo .pm-input{flex:1 1 auto;min-width:0;font-size:11px;}',
       '.pm-actions{display:flex;flex-wrap:wrap;gap:5px;}',
       '.pm-block{width:100%;justify-content:center;}',
-      '.pm-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:26px;padding:0 9px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap;}',
+      '.pm-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:26px;padding:0 9px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;}',
       '.pm-btn:hover:not(:disabled){border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);}',
       '.pm-btn:disabled{opacity:.45;cursor:not-allowed;}',
       '.pm-btn.is-primary{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);}',
@@ -2616,134 +2839,195 @@ window.__ModuleLoader__.load({
       '.pm-btn:disabled{opacity:.5;cursor:default;}',
       '.pm-btn.is-ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);}',
       '.pm-btn.is-ghost:hover:not(:disabled){background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);}',
-      '.pm-btn.is-danger{color:#d97a7a;}',
-      '.pm-chip{padding:1px 7px;border-radius:99px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:10.5px;cursor:pointer;}',
+      '.pm-btn.is-danger{color:var(--dsw-alias-state-error-primary);}',
+      '.pm-chip{padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;}',
       '.pm-chip:hover{background:var(--dsw-alias-bg-overlay);}',
-      '.pm-form{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;}',
+      '.pm-form{display:flex;flex-direction:column;gap:6px;padding:8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);}',
       '.pm-form-row{display:flex;flex-direction:column;gap:3px;}',
-      '.pm-label{font-size:10.5px;color:var(--dsw-alias-label-caption);}',
-      '.pm-input{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:5px 7px;font:inherit;font-size:12px;}',
+      '.pm-label{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-input{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:5px 7px;font:inherit;font-size:12px;}',
       '.pm-input:focus{outline:none;border-color:var(--dsw-alias-border-l2);}',
       '.pm-input-multi{resize:vertical;line-height:1.5;font-family:inherit;}',
       '.pm-input-title{font-size:14px;font-weight:600;max-width:360px;}',
       '.pm-presets{display:flex;flex-wrap:wrap;gap:4px;align-items:center;}',
       '.pm-mod-list{display:flex;flex-direction:column;gap:6px;}',
-      '.pm-mod{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:7px 8px;display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-mod{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);padding:7px 8px;display:flex;flex-direction:column;gap:3px;background:var(--dsw-alias-bg-layer-1);}',
       '.pm-mod.is-off{opacity:.55;}',
       '.pm-mod-head{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
-      '.pm-mod-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-mod-role{margin:0;font-size:11.5px;color:var(--dsw-alias-label-secondary);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}',
-      '.pm-mod-meta{margin:0;font-size:10.5px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-mod-name{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-mod-role{margin:0;font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}',
+      '.pm-mod-meta{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-mod-actions{display:flex;gap:2px;margin-top:1px;}',
-      '.pm-switch{width:26px;height:15px;flex:none;border-radius:99px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);padding:1px;cursor:pointer;display:inline-flex;align-items:center;}',
+      '.pm-switch{width:26px;height:15px;flex:none;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);padding:1px;cursor:pointer;display:inline-flex;align-items:center;}',
       '.pm-switch.is-on{background:var(--dsw-alias-brand-primary);border-color:transparent;justify-content:flex-end;}',
       '.pm-switch-dot{width:11px;height:11px;border-radius:50%;background:var(--dsw-alias-label-caption);}',
       '.pm-switch.is-on .pm-switch-dot{background:#fff;}',
-      '.pm-hint{padding:8px 10px;font-size:11.5px;color:var(--dsw-alias-label-caption);}',
-      '.pm-hint.is-error{color:#d97a7a;}',
-      '.pm-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);max-width:70%;padding:7px 14px;border-radius:8px;font-size:12px;cursor:pointer;z-index:20;box-shadow:0 6px 20px rgba(0,0,0,.18);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);}',
-      '.pm-toast.is-error{color:#d97a7a;}',
+      '.pm-hint{padding:8px 10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-hint.is-error{color:var(--dsw-alias-state-error-primary);}',
+      '.pm-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);max-width:70%;padding:7px 14px;border-radius:var(--dsw-radius-sm);font-size:12px;cursor:pointer;z-index:20;box-shadow:var(--dsw-shadow-lv2);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);}',
+      '.pm-toast.is-error{color:var(--dsw-alias-state-error-primary);}',
       '.pm-rail-pin{padding:6px 6px 0;}',
       '.pm-proj-pin{border-color:var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);}',
       '.pm-agent-body{display:flex;flex-direction:column;gap:8px;padding:8px;overflow:hidden;}',
       '.pm-chat-slot{flex:0 0 auto;height:48%;min-height:215px;display:flex;min-height:0;}',
-      '.pm-chat{flex:1;display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
+      '.pm-chat{flex:1;display:flex;flex-direction:column;min-height:0;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);overflow:hidden;}',
       '.pm-chat-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);min-height:32px;box-sizing:border-box;}',
       '.pm-chat-title{font-size:12px;font-weight:600;flex:none;}',
       '.pm-chat-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dsw-alias-label-caption);}',
-      '.pm-chat-dot.is-idle{background:#5aa87a;}',
-      '.pm-chat-dot.is-busy{background:#d99a5f;animation:pm-pulse 1.1s ease-in-out infinite;}',
-      '.pm-chat-status{flex:1;font-size:10.5px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-chat-dot.is-idle{background:var(--dsw-alias-state-success-primary);}',
+      '.pm-chat-dot.is-busy{background:var(--dsw-alias-state-warn-primary);animation:pm-pulse 1.1s ease-in-out infinite;}',
+      '.pm-chat-status{flex:1;font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '@keyframes pm-pulse{0%,100%{opacity:.35;}50%{opacity:1;}}',
       '.pm-chat-box{flex:1;min-height:0;overflow:auto;padding:8px;display:flex;flex-direction:column;gap:7px;}',
       '.pm-chat-hint{font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.55;}',
-      '.pm-chat-hint.is-error{color:#d97a7a;}',
+      '.pm-chat-hint.is-error{color:var(--dsw-alias-state-error-primary);}',
       '.pm-msg{display:flex;flex-direction:column;gap:2px;max-width:100%;}',
       '.pm-msg-role{font-size:10px;color:var(--dsw-alias-label-caption);}',
-      '.pm-msg-text{font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-msg-text{font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);}',
       '.pm-msg.is-user{align-items:flex-end;}',
       '.pm-msg.is-user .pm-msg-text{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);}',
       '.pm-chat-composer{display:flex;flex-direction:column;gap:5px;padding:7px 8px;border-top:1px solid var(--dsw-alias-border-l1);}',
-      '.pm-chat-input{width:100%;box-sizing:border-box;resize:none;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:6px 8px;font:inherit;font-size:12px;line-height:1.5;}',
+      '.pm-chat-input{width:100%;box-sizing:border-box;resize:none;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:6px 8px;font:inherit;font-size:12px;line-height:1.5;}',
       '.pm-chat-input:focus{outline:none;border-color:var(--dsw-alias-border-l2);}',
       '.pm-chat-actions{display:flex;align-items:center;gap:6px;justify-content:space-between;}',
       '.pm-chat-links{display:flex;gap:2px;flex-wrap:wrap;justify-content:flex-end;}',
       '.pm-ov{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;gap:10px;min-height:0;}',
-      '.pm-ov-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-ov-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);}',
       '.pm-ov-title{font-size:15px;font-weight:600;}',
-      '.pm-ov-stats{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-ov-stats{display:flex;align-items:center;gap:10px;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-ov-stat b{color:var(--dsw-alias-label-primary);font-size:14px;margin-right:2px;}',
       '.pm-ov-body{flex:1;min-height:0;display:flex;gap:10px;}',
       '.pm-ov-main{flex:1;min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;}',
-      '.pm-ov-section{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
+      '.pm-ov-section{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);padding:10px 12px;display:flex;flex-direction:column;gap:8px;}',
       '.pm-ov-sec-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
       '.pm-ov-sec-actions{display:flex;align-items:center;gap:4px;}',
       '.pm-ov-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;}',
-      '.pm-ov-card{display:flex;flex-direction:column;gap:4px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-2);color:inherit;font:inherit;text-align:left;cursor:pointer;}',
+      '.pm-ov-card{display:flex;flex-direction:column;gap:4px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:inherit;font:inherit;text-align:left;cursor:pointer;}',
       '.pm-ov-card:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);}',
       '.pm-ov-card-top{display:flex;align-items:center;justify-content:space-between;gap:6px;}',
       '.pm-ov-card-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-ov-card-path{font-size:10.5px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.pm-ov-card-row{display:flex;flex-wrap:wrap;gap:8px;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-ov-card-path{font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-ov-card-row{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-ov-card-files{display:flex;flex-wrap:wrap;gap:4px;}',
-      '.pm-ov-file{font-size:10px;padding:1px 6px;border-radius:99px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);}',
+      '.pm-ov-file{font-size:10px;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);}',
       '.pm-ov-search{display:flex;gap:6px;}',
       '.pm-ov-hits{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow:auto;}',
-      '.pm-ov-hit{display:flex;flex-wrap:wrap;gap:6px;padding:5px 7px;border-radius:7px;background:var(--dsw-alias-bg-layer-2);font-size:11px;}',
+      '.pm-ov-hit{display:flex;flex-wrap:wrap;gap:6px;padding:5px 7px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);font-size:11px;}',
       '.pm-ov-hit-proj{color:var(--dsw-alias-brand-primary);}',
       '.pm-ov-hit-rel{color:var(--dsw-alias-label-secondary);}',
       '.pm-ov-hit-kind{color:var(--dsw-alias-label-caption);}',
       '.pm-ov-hit-text{flex-basis:100%;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-ov-report{display:flex;flex-direction:column;gap:6px;}',
-      '.pm-ov-report-body{margin:0;max-height:320px;overflow:auto;padding:9px 11px;border-radius:8px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.6;white-space:pre-wrap;}',
+      '.pm-ov-report-body{margin:0;max-height:320px;overflow:auto;padding:9px 11px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;}',
       '.pm-ov-report-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}',
       '.pm-ov-chat{flex:0 0 340px;min-width:0;display:flex;}',
-      '.pm-ov-note{font-size:11.5px;color:#d97a7a;}',
+      '.pm-ov-note{font-size:11px;color:var(--dsw-alias-state-error-primary);}',
       '.pm-chip.is-on{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);}',
-      '.pm-tabs{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;align-self:flex-start;padding:3px;border-radius:11px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);box-shadow:0 1px 2px rgba(0,0,0,.06);}',
-      '.pm-tab{padding:5px 16px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;cursor:pointer;transition:background .12s ease,color .12s ease;}',
+      '.pm-tabs{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;align-self:flex-start;padding:3px;border-radius:var(--dsw-radius-md);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv1);}',
+      '.pm-tab{padding:5px 16px;border-radius:var(--dsw-radius-sm);border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;transition:background .12s ease,color .12s ease;}',
       '.pm-tab:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
-      '.pm-tab.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.14);}',
+      '.pm-tab.is-active{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:var(--dsw-shadow-lv1);}',
       '.pm-workspace{display:flex;align-items:stretch;gap:10px;flex:1;min-height:0;min-width:0;}',
       '.pm-scroll{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:2px;}',
       '.pm-kv{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-kv span{display:inline-flex;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;}',
-      '.pm-group{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);padding:9px 11px;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease;}',
+      '.pm-group{border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);padding:9px 11px;display:flex;flex-direction:column;gap:7px;transition:border-color .12s ease;}',
       '.pm-group:hover{border-color:var(--dsw-alias-border-l2);}',
       '.pm-group-add{background:transparent;border-style:dashed;}',
       '.pm-group-head{display:flex;align-items:center;gap:8px;font-size:12px;}',
       '.pm-group-name{font-weight:600;}',
       '.pm-group-actions{margin-left:auto;display:flex;gap:4px;}',
-      '.pm-site-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-site-row{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);}',
       '.pm-site-row:hover{background:var(--dsw-alias-bg-overlay);}',
       '.pm-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-border-l2);}',
-      '.pm-dot.is-ok{background:#5aa87a;box-shadow:0 0 0 3px rgba(90,168,122,.16);}',
-      '.pm-dot.is-down{background:#d97a7a;box-shadow:0 0 0 3px rgba(217,122,122,.16);}',
+      '.pm-dot.is-ok{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px rgba(90,168,122,.16);}',
+      '.pm-dot.is-down{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 3px rgba(217,122,122,.16);}',
       '.pm-dot.is-idle{background:var(--dsw-alias-label-caption);opacity:.45;}',
       '.pm-site-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}',
-      '.pm-site-name{padding:0;border:none;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12.5px;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-site-name{padding:0;border:none;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-site-name:hover{text-decoration:underline;}',
       '.pm-site-meta{display:flex;gap:6px;min-width:0;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-site-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-site-note{flex:0 0 auto;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '.pm-site-status{font-size:11px;color:var(--dsw-alias-label-caption);white-space:nowrap;}',
-      '.pm-site-status.is-ok{color:#5aa87a;}',
-      '.pm-site-status.is-down{color:#d97a7a;}',
+      '.pm-site-status.is-ok{color:var(--dsw-alias-state-success-primary);}',
+      '.pm-site-status.is-down{color:var(--dsw-alias-state-error-primary);}',
       '.pm-site-actions{display:flex;gap:2px;flex:0 0 auto;}',
       '.pm-form-grid{display:grid;grid-template-columns:56px minmax(0,1fr) 56px minmax(0,1fr);gap:6px 8px;align-items:center;}',
-      '.pm-form-grid label{font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-form-grid label{font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-site-form{border-color:var(--dsw-alias-border-l2);flex:0 0 auto;}',
-      '.pm-log-item{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-log-item{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
       '.pm-log-head{display:flex;align-items:center;gap:8px;font-size:12px;}',
       '.pm-log-title{font-weight:600;}',
-      '.pm-log-changes{margin:0;padding-left:16px;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary);}',
+      '.pm-log-changes{margin:0;padding-left:16px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);}',
       '.pm-history{display:flex;flex-direction:column;gap:5px;max-height:340px;overflow:auto;}',
-      '.pm-history-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-history-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
       '.pm-history-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}',
       '.pm-history-title{display:flex;align-items:center;gap:7px;font-size:12px;}',
       '.pm-history-version{font-weight:600;}',
       '.pm-history-actions{display:flex;gap:4px;flex:0 0 auto;}',
       '.pm-spinner{width:10px;height:10px;border-radius:50%;border:1.5px solid currentColor;border-top-color:transparent;display:inline-block;animation:pm-spin .8s linear infinite;}',
+      '.pm-btn.is-sm{height:22px;padding:0 7px;font-size:11px;border-radius:var(--dsw-radius-sm);}',
+      '.pm-group-name{padding:0;border:none;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer;}',
+      '.pm-group-name:hover{text-decoration:underline dotted;}',
+      '.pm-group-rename{width:190px;height:24px;}',
+      '.pm-group-actions{margin-left:auto;display:flex;gap:4px;}',
+      '.pm-site-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:8px;}',
+      '.pm-site-card{display:flex;flex-direction:column;gap:5px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);transition:border-color .12s ease;}',
+      '.pm-site-card:hover{border-color:var(--dsw-alias-border-l2);}',
+      '.pm-site-card-head{display:flex;align-items:center;gap:6px;min-width:0;}',
+      '.pm-site-card-name{padding:0;border:none;background:transparent;color:inherit;font:inherit;font-size:12px;font-weight:600;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;}',
+      '.pm-site-card-name:hover{text-decoration:underline;}',
+      '.pm-site-card-url{padding:0;border:none;background:transparent;color:var(--dsw-alias-label-caption);font:inherit;font-size:11px;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-site-card-url:hover{color:var(--dsw-alias-label-secondary);}',
+      '.pm-site-card-note{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-site-card-status{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-site-card-status.is-ok{color:var(--dsw-alias-state-success-primary);}',
+      '.pm-site-card-status.is-down{color:var(--dsw-alias-state-error-primary);}',
+      '.pm-site-card-actions{display:flex;gap:4px;margin-top:2px;flex-wrap:wrap;}',
+      '.pm-modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:28px;background:rgba(0,0,0,.42);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);}',
+      '.pm-modal-card{width:min(780px,100%);max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:var(--dsw-radius-md);border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel);}',
+      '.pm-modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}',
+      '.pm-modal-title{font-size:14px;font-weight:600;}',
+      '.pm-modal-section{display:flex;flex-direction:column;gap:6px;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-modal-section-title{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
+      '.pm-editor .pm-form-grid{grid-template-columns:56px minmax(0,1fr);}',
+      '.pm-accounts{display:flex;flex-direction:column;gap:5px;}',
+      '.pm-account-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);}',
+      '.pm-account-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}',
+      '.pm-account-label{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary);}',
+      '.pm-account-name{font-weight:600;color:var(--dsw-alias-label-primary);}',
+      '.pm-account-fields{display:flex;gap:14px;align-items:center;min-width:0;}',
+      '.pm-account-user{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-account-pass{font-size:12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary);}',
+      '.pm-account-actions{display:flex;gap:4px;flex:none;}',
+      '.pm-account-editor{display:flex;flex-direction:column;gap:6px;}',
+      '.pm-account-edit-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr) minmax(0,1.1fr) minmax(0,1fr) auto;gap:6px;align-items:center;}',
+      '.pm-viewer{align-items:stretch;justify-content:stretch;padding:0;background:var(--dsw-alias-bg-base);}',
+      '.pm-viewer-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);flex:0 0 auto;}',
+      '.pm-viewer-title-row{display:flex;align-items:center;gap:8px;min-width:0;}',
+      '.pm-viewer-title{font-size:13px;font-weight:600;white-space:nowrap;}',
+      '.pm-viewer-url{font-size:11px;color:var(--dsw-alias-label-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:440px;}',
+      '.pm-viewer-tools{display:flex;align-items:center;gap:4px;flex:none;}',
+      '.pm-viewer-zoom{font-size:11px;color:var(--dsw-alias-label-caption);min-width:36px;text-align:center;}',
+      '.pm-viewer-accounts{padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);display:flex;flex-direction:column;gap:6px;flex:0 0 auto;max-height:40vh;overflow:auto;}',
+      '.pm-viewer-accounts-hint{font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-viewer-frame-wrap{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;background:#fff;}',
+      '.pm-viewer-frame{position:absolute;top:0;left:0;transform-origin:top left;}',
+      '.pm-viewer-iframe{width:100%;height:100%;border:none;display:block;background:#fff;}',
+      '.pm-viewer-blocked{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:24px;text-align:center;background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-viewer-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-1);}',
+      '.pm-root :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;}',
+      'html[data-input-modality="pointer"] .pm-root :focus-visible:not(:read-write){outline-color:transparent;}',
+      '.pm-scroll::-webkit-scrollbar,.pm-pane-body::-webkit-scrollbar,.pm-modal-card::-webkit-scrollbar,.pm-viewer-accounts::-webkit-scrollbar,.pm-history::-webkit-scrollbar{width:5px;height:5px;}',
+      '.pm-scroll::-webkit-scrollbar-thumb,.pm-pane-body::-webkit-scrollbar-thumb,.pm-modal-card::-webkit-scrollbar-thumb,.pm-viewer-accounts::-webkit-scrollbar-thumb,.pm-history::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l1);border-radius:999px;}',
+      '.pm-scroll::-webkit-scrollbar-thumb:hover,.pm-pane-body::-webkit-scrollbar-thumb:hover,.pm-modal-card::-webkit-scrollbar-thumb:hover,.pm-viewer-accounts::-webkit-scrollbar-thumb:hover,.pm-history::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-scrollbar-hover-l1);}',
+      '.pm-scroll::-webkit-scrollbar-track,.pm-pane-body::-webkit-scrollbar-track,.pm-modal-card::-webkit-scrollbar-track,.pm-viewer-accounts::-webkit-scrollbar-track,.pm-history::-webkit-scrollbar-track{background:transparent;}',
+      '.pm-btn,.pm-tab,.pm-chip,.pm-site-card,.pm-group,.pm-tree-row,.pm-account-row{transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease;}',
+      '.pm-btn:disabled{opacity:.45;cursor:not-allowed;}',
+      '.pm-empty{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:transparent;}',
+      '.pm-input:focus-visible{border-color:var(--dsw-alias-state-business-primary);}',
+      '.pm-card{background:var(--dsw-alias-bg-layer-3);}',
       '@keyframes pm-spin{to{transform:rotate(360deg);}}'
     ].join('\n');
 

@@ -212,23 +212,46 @@ async function saveState(root, state) {
 
 /* -------------------------------------------------------------- 站点台账 */
 
-const DEFAULT_SITE_GROUPS = [
-  { id: 'test', name: '测试环境', env: 'test', order: 0 },
-  { id: 'prod', name: '正式环境', env: 'prod', order: 1 }
-];
-
-const SITE_ENVS = new Set(['test', 'prod', 'dev', 'custom']);
+/** 一个分区 = 用户自己命名的一组网站；默认给一个，用户可增删改名 */
+const DEFAULT_SITE_GROUPS = [{ id: 'default', name: '我的站点', order: 0 }];
 const SITE_PROBE_TIMEOUT = 8000;
+const SITE_ACCOUNT_LIMIT = 20;
+
+function cleanText(value, limit, fallback = '') {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return fallback;
+  // 全是问号说明这段文字在某处被按 ANSI 编码写过，留着会把界面显示成「????」
+  if (/^[?\uFF1F\s]+$/.test(text)) return fallback;
+  return text.slice(0, limit);
+}
 
 function normalizeSiteGroup(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const siteName = typeof raw.name === 'string' ? raw.name.trim() : '';
-  if (!siteName) return null;
+  const groupName = cleanText(raw.name, 40);
+  if (!groupName) return null;
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : newId('g'),
-    name: siteName,
-    env: SITE_ENVS.has(raw.env) ? raw.env : 'custom',
-    order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 100
+    name: groupName,
+    note: cleanText(raw.note, 200),
+    order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 100,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString()
+  };
+}
+
+/** 一个网站下可以挂多条登录账号；密码只在本地数据目录里存明文，界面默认打码 */
+function normalizeAccount(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const username = cleanText(raw.username, 120);
+  const password = typeof raw.password === 'string' ? raw.password.slice(0, 200) : '';
+  const label = cleanText(raw.label, 40);
+  const note = cleanText(raw.note, 120);
+  if (!username && !password && !label && !note) return null;
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newId('a'),
+    label: label || username || '账号',
+    username,
+    password,
+    note
   };
 }
 
@@ -236,15 +259,21 @@ function normalizeSite(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const url = typeof raw.url === 'string' ? raw.url.trim() : '';
   if (!url) return null;
-  const siteName = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : url;
+  const siteName = cleanText(raw.name, 60, url);
+  const accounts = Array.isArray(raw.accounts)
+    ? raw.accounts.map(normalizeAccount).filter(Boolean).slice(0, SITE_ACCOUNT_LIMIT)
+    : [];
+  const now = new Date().toISOString();
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : newId('s'),
-    groupId: typeof raw.groupId === 'string' && raw.groupId ? raw.groupId : 'test',
+    groupId: typeof raw.groupId === 'string' && raw.groupId ? raw.groupId : 'default',
     name: siteName,
     url,
-    note: typeof raw.note === 'string' ? raw.note : '',
+    note: cleanText(raw.note, 300),
+    accounts,
     check: raw.check !== false,
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString()
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
   };
 }
 
@@ -2072,11 +2101,17 @@ async function handlePost(ctx, req, res, route, root) {
     const groups = Array.isArray(payload.groups)
       ? payload.groups.map(normalizeSiteGroup).filter(Boolean)
       : state.siteGroups;
-    if (!groups.length) throw fail(400, 'BAD_GROUPS', '至少要留一个环境分组');
+    if (!groups.length) throw fail(400, 'BAD_GROUPS', '至少要留一个分区，网站都挂在这个分区下面');
+    const sorted = groups.sort((a, b) => a.order - b.order);
+    const known = new Set(sorted.map((item) => item.id));
+    // 分区被删掉时，原来挂在它下面的网站挪到第一个分区，别丢数据
+    const fallbackGroup = sorted[0].id;
     const sites = Array.isArray(payload.sites)
-      ? payload.sites.map(normalizeSite).filter(Boolean)
+      ? payload.sites.map(normalizeSite).filter(Boolean).map((site) => (
+        known.has(site.groupId) ? site : { ...site, groupId: fallbackGroup }
+      ))
       : state.sites;
-    state.siteGroups = groups.sort((a, b) => a.order - b.order);
+    state.siteGroups = sorted;
     state.sites = sites;
     await saveState(root, state);
     sendJson(res, 200, { ok: true, value: { groups: state.siteGroups, sites: state.sites } });
