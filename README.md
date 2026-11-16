@@ -2,7 +2,7 @@
 
 面向技术部项目经理的 DSH 插件（前身「工作台」1.2.0）：把「一堆项目文件夹 + 文档产出 + 多智能体分工 + 跨项目汇报 + 环境地址台账 + 插件自身版本 + 代码提交记录」收进一个面板。
 
-> 当前版本 **2.1.0**：站点能直接粘地址加；项目页文件树 / AI 栏可一键收起，「专注」只留文档；版本页能看到 git / GitHub 的最近提交。
+> 当前版本 **2.1.1**：站点能直接粘地址加；项目页文件树 / AI 栏可一键收起，「专注」只留文档；版本页能看到 git / GitHub 的最近提交，仓库地址直接在面板里填。
 
 ## 三个模块页签：项目 / 站点 / 版本
 
@@ -23,7 +23,7 @@
   - 每次 Host 启动自动快照（同一份代码指纹去重），也可手动「备份当前版本」；
   - 历史快照列表 + 一键回滚，回滚前会自动把当前版本再存一份，可来回滚；
   - 快照覆盖 `index.js / client.js / package.json / version.json / cordis.patch.yml / icon.svg`，最多 200 条；
-  - **提交记录**：插件目录是 git 仓库时读本地提交，否则读 `version.json` 里 `repository.url` 指向的 GitHub 仓库（最近 20 条：短 hash、说明、日期、作者），旁边「逛仓库」直接开浏览器。
+  - **提交记录**：插件目录是 git 仓库时读本地提交；否则读「提交记录」上方输入框里填的 GitHub 仓库地址（再退到 `version.json` 的 `repository.url`）。最近 20 条：短 hash、说明、日期、作者，旁边「逛仓库」直接开浏览器。
 
 ## 就地改文档，AI 随时接手
 
@@ -74,25 +74,20 @@ _pm/
 
 ### 想让版本页显示 GitHub 提交记录
 
-1. 在插件源码目录（`F:\dsh\dafeiyu\v2`）建仓并提交：
+1. 在插件源码目录（`F:\dsh\dafeiyu\v2`）建仓并提交，推到你的 GitHub 仓库（仓库可以先用空的）：
 
    ```powershell
    cd F:\dsh\dafeiyu\v2
    git init
    git add -A
-   git commit -m "大肥鱼 2.1.0"
+   git commit -m "大肥鱼 2.1.1"
    git remote add origin https://github.com/<你的账号>/dafeiyu.git
    git push -u origin main
    ```
 
-2. 把仓库地址写进 `version.json` 的 `repository.url`，重新打包安装：
+2. 打开面板「版本」页签，在「提交记录」上方的输入框里粘上仓库地址（`https://github.com/<你的账号>/dafeiyu`），回车或点保存。地址存在数据目录的 `settings.repositoryUrl` 里，**不用改包、不用重装**，重装插件也不丢。
 
-   ```json
-   "repository": { "type": "git", "url": "https://github.com/<你的账号>/dafeiyu.git" }
-   ```
-
-3. 之后版本页的「提交记录」会自动读这个仓库的最近 20 条提交；本地有 `.git` 时优先读本地，不用联网。
-4. 本机没有 `gh` CLI、也没有 git 凭据，推送这一步要你自己来（或者配好凭据后让我代推）。
+3. 之后版本页会读最近 20 条提交。优先级：本地 `.git` > 面板里填的地址 > `version.json` 的 `repository.url`（打包分发时可以预置）。
 
 ## 已知边界
 
@@ -100,5 +95,5 @@ _pm/
 - Office 预览是**只读位图**（不做文字选择、不解析批注），一次最多 20 页 / 20 张工作表，超出请「外部打开」。
 - 站点探测只反映「这台机器此刻能不能连通」，不判断业务是否正常。
 - 版本回滚只覆盖 6 个代码文件，不动数据目录，所以回滚不会丢项目台账。
-- 提交记录只读：本地仓库读 `git log`，远端读 GitHub 公开 API（未登录，私有仓库和频率限制会读不到）。
+- 提交记录只读：本地仓库读 `git log`，远端读 GitHub 公开 API。未登录时按出口 IP 限流（每小时 60 次），私有仓库读不到；设 `GITHUB_TOKEN` / `GH_TOKEN` 环境变量即可带上鉴权。
 - 渲染引擎优先用 DSH 自带的 `officeKit`，不可用时退回 `@deepseek-ai/libreoffice-kit`；两者都起不来时给「重试 / 用系统程序打开」退路（详见 [docs/DETAIL.md](docs/DETAIL.md)）。
