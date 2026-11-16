@@ -558,6 +558,101 @@ async function restoreVersion(root, id) {
   return { restored: entry, backup: safety.entry, current: { version: info.version, hash } };
 }
 
+/* ------------------------------ 场景模板（layout） ------------------------------ */
+
+const SCENARIO_DIR_NAME = 'scenarios';
+const SCENARIO_PANEL_TYPES = ['view', 'file', 'reserved', 'harness'];
+const SCENARIO_LIMIT = 40;
+
+function scenarioDirs(root) {
+  return [
+    { dir: path.join(packageDir(), SCENARIO_DIR_NAME), source: 'package' },
+    { dir: path.join(root, SCENARIO_DIR_NAME), source: 'data' }
+  ];
+}
+
+function scenarioNumber(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const int = Math.round(num);
+  if (int < min) return min;
+  if (int > max) return max;
+  return int;
+}
+
+function normalizeScenarioPanel(raw, index) {
+  if (!raw || typeof raw !== 'object') return null;
+  const type = SCENARIO_PANEL_TYPES.includes(raw.type) ? raw.type : 'reserved';
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id.slice(0, 40) : 'panel-' + (index + 1),
+    title: typeof raw.title === 'string' ? raw.title.slice(0, 40) : '',
+    sub: typeof raw.sub === 'string' ? raw.sub.slice(0, 120) : '',
+    type,
+    col: scenarioNumber(raw.col, 1, 1, 12),
+    row: scenarioNumber(raw.row, 1, 1, 12),
+    w: scenarioNumber(raw.w, 1, 1, 12),
+    h: scenarioNumber(raw.h, 1, 1, 12)
+  };
+}
+
+function normalizeScenario(raw, fallbackId, source) {
+  if (!raw || typeof raw !== 'object') return null;
+  const panels = Array.isArray(raw.panels) ? raw.panels.map(normalizeScenarioPanel).filter(Boolean) : [];
+  if (!panels.length) return null;
+  let cols = 1;
+  let rows = 1;
+  for (const panel of panels) {
+    cols = Math.max(cols, panel.col + panel.w - 1);
+    rows = Math.max(rows, panel.row + panel.h - 1);
+  }
+  return {
+    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim().slice(0, 60) : fallbackId,
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 60) : fallbackId,
+    description: typeof raw.description === 'string' ? raw.description.slice(0, 200) : '',
+    layout: 'grid',
+    theme: raw.theme === 'light' ? 'light' : 'dark',
+    cols: Math.min(cols, 12),
+    rows: Math.min(rows, 12),
+    panels,
+    source
+  };
+}
+
+async function readScenarios(root) {
+  const items = [];
+  const indexById = new Map();
+  for (const { dir, source } of scenarioDirs(root)) {
+    let entries = [];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    entries.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.json$/i.test(entry.name)) continue;
+      const fallbackId = entry.name.replace(/\.json$/i, '');
+      try {
+        const raw = JSON.parse(await fsp.readFile(path.join(dir, entry.name), 'utf8'));
+        const scenario = normalizeScenario(raw, fallbackId, source);
+        if (!scenario) continue;
+        if (indexById.has(scenario.id)) {
+          if (source !== 'data') continue;
+          items.splice(indexById.get(scenario.id), 1);
+          indexById.clear();
+          items.forEach((item, position) => indexById.set(item.id, position));
+        }
+        indexById.set(scenario.id, items.length);
+        items.push(scenario);
+        if (items.length >= SCENARIO_LIMIT) return items;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return items;
+}
+
 function normalizeProject(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const root = typeof raw.root === 'string' ? raw.root.trim() : '';
@@ -572,6 +667,7 @@ function normalizeProject(raw) {
     leadSessionId: typeof raw.leadSessionId === 'string' ? raw.leadSessionId : null,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
     lastRel: typeof raw.lastRel === 'string' ? raw.lastRel : '',
+    layout: typeof raw.layout === 'string' ? raw.layout.slice(0, 60) : '',
     modules,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString()
@@ -1932,6 +2028,12 @@ async function handleGet(ctx, req, res, route, params, root) {
     return;
   }
 
+  if (route === '/scenarios') {
+    const items = await readScenarios(root);
+    sendJson(res, 200, { ok: true, value: { items } });
+    return;
+  }
+
   if (route === '/overview') {
     const value = await overviewValue(state);
     sendJson(res, 200, { ok: true, value });
@@ -2111,6 +2213,7 @@ async function handlePost(ctx, req, res, route, root) {
     if (typeof patch.color === 'string') project.color = patch.color;
     if (typeof patch.notes === 'string') project.notes = patch.notes;
     if (typeof patch.lastRel === 'string') project.lastRel = patch.lastRel;
+    if (typeof patch.layout === 'string') project.layout = patch.layout.trim().slice(0, 60);
     if (typeof patch.workspaceId === 'string' || patch.workspaceId === null) project.workspaceId = patch.workspaceId;
     if (typeof patch.leadSessionId === 'string' || patch.leadSessionId === null) project.leadSessionId = patch.leadSessionId;
     if (Array.isArray(patch.modules)) project.modules = patch.modules.map(normalizeModule).filter(Boolean);
@@ -2118,6 +2221,12 @@ async function handlePost(ctx, req, res, route, root) {
     project.updatedAt = new Date().toISOString();
     await saveState(root, state);
     sendJson(res, 200, { ok: true, value: { project, stats: await projectStats(project) } });
+    return;
+  }
+
+  if (route === '/scenarios/refresh') {
+    const items = await readScenarios(root);
+    sendJson(res, 200, { ok: true, value: { items, refreshedAt: new Date().toISOString() } });
     return;
   }
 

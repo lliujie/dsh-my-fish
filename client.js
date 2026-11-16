@@ -1284,6 +1284,39 @@ window.__ModuleLoader__.load({
         say(focusing ? '专注模式：只留文档，再点一次恢复' : '已恢复文件树和智能体栏');
       };
 
+      /* 场景模板：project.layout 存场景 id，空 = 经典三栏 */
+      const scenarios = Array.isArray(props.scenarios) ? props.scenarios : [];
+      const sceneId = typeof project.layout === 'string' ? project.layout : '';
+      const scene = sceneId ? scenarios.find((item) => item.id === sceneId) || null : null;
+      const scenePanel = (type) => (scene && Array.isArray(scene.panels)
+        ? scene.panels.find((panel) => panel.type === type) || null
+        : null);
+      const sceneStyle = (type) => {
+        const panel = scenePanel(type);
+        if (!panel) return null;
+        return {
+          gridColumn: panel.col + ' / span ' + panel.w,
+          gridRow: panel.row + ' / span ' + panel.h
+        };
+      };
+      const sceneTag = (type) => {
+        const panel = scenePanel(type);
+        if (!panel) return null;
+        return h('div', { className: 'pm-scene-tag' },
+          h('span', { className: 'pm-scene-name' }, panel.title || type),
+          panel.sub ? h('span', { className: 'pm-scene-sub' }, panel.sub) : null);
+      };
+      const switchLayout = async (nextId) => {
+        try {
+          const value = await post('/project/update', { id: project.id, patch: { layout: nextId } });
+          if (value && value.project) props.onPatched(value.project, value.stats);
+          const picked = scenarios.find((item) => item.id === nextId);
+          say(nextId ? '已切到「' + ((picked && picked.name) || nextId) + '」布局' : '已切回三栏布局');
+        } catch (err) {
+          say('切换布局失败：' + msg(err), 'error');
+        }
+      };
+
       const selRef = useRef(null);
       selRef.current = sel;
       const editorRef = useRef(null);
@@ -1642,6 +1675,25 @@ window.__ModuleLoader__.load({
 
       const stats = project.stats || {};
 
+      const agentProps = {
+        project,
+        presets: props.presets,
+        get,
+        say,
+        patch,
+        briefBusy: busyBrief,
+        onBrief: runBrief,
+        onCopyLaunch: copyLaunch,
+        onCopyModule: copyModule,
+        onOpenLead: openLead,
+        onRebind: async () => {
+          if (await props.ask('解除当前会话绑定并新建一个主智能体会话？')) {
+            patch({ leadSessionId: null });
+            say('已解除绑定，再点「新建主智能体会话」即可');
+          }
+        }
+      };
+
       return h(
         'div',
         {
@@ -1688,17 +1740,30 @@ window.__ModuleLoader__.load({
               h('span', null, '共 ' + (stats.files || 0) + ' 个文件')))
           ,
           h('div', { className: 'pm-head-actions' },
+            h('select', {
+              className: 'pm-input pm-layout-select',
+              title: '布局：三栏，或者用场景模板（scenarios/*.json）',
+              value: sceneId,
+              onChange: (event) => switchLayout(event.target.value)
+            },
+              h('option', { value: '' }, '三栏布局'),
+              scenarios.map((item) => h('option', { key: item.id, value: item.id }, item.name || item.id))),
             h('button', {
+              className: 'pm-btn is-ghost',
+              title: '重新读取 scenarios 目录里的场景文件（插件包 + 数据目录）',
+              onClick: () => { if (props.onRefreshScenarios) props.onRefreshScenarios(); }
+            }, '⟳ 场景'),
+            scene ? null : h('button', {
               className: cx('pm-btn', showFiles ? 'is-ghost' : 'is-primary'),
               title: '折叠 / 展开左侧文件树，给文档腾地方',
               onClick: () => togglePane('files')
             }, showFiles ? '收起文件树' : '展开文件树'),
-            h('button', {
+            scene ? null : h('button', {
               className: cx('pm-btn', showAgent ? 'is-ghost' : 'is-primary'),
               title: '折叠 / 展开右侧智能体栏',
               onClick: () => togglePane('agent')
             }, showAgent ? '收起 AI 栏' : '展开 AI 栏'),
-            h('button', {
+            scene ? null : h('button', {
               className: cx('pm-btn', (!showFiles && !showAgent) ? 'is-primary' : ''),
               title: '只留文档，屏幕再小也能看全',
               onClick: toggleFocus
@@ -1732,13 +1797,24 @@ window.__ModuleLoader__.load({
               h('button', { className: 'pm-btn is-ghost', onClick: () => setNotesOpen(false) }, '取消')))
           : null,
 
-        /* 三栏（文件树 / 编辑预览 / 智能体栏，可各自折叠） */
+        /* 三栏（文件树 / 编辑预览 / 智能体栏，可各自折叠）或场景网格 */
         h('div', {
-          className: cx('pm-body', !showFiles ? 'no-files' : '', !showAgent ? 'no-agent' : '')
+          className: cx('pm-body', scene ? 'pm-scene' : '',
+            !scene && !showFiles ? 'no-files' : '', !scene && !showAgent ? 'no-agent' : ''),
+          style: scene
+            ? {
+              display: 'grid',
+              gridTemplateColumns: 'repeat(' + scene.cols + ', minmax(0, 1fr))',
+              gridTemplateRows: 'repeat(' + scene.rows + ', minmax(0, 1fr))',
+              gap: '8px'
+            }
+            : null
         },
 
           /* 文件树 */
-          showFiles ? h('section', { className: 'pm-pane pm-files' },
+          (scene ? Boolean(scenePanel('file')) : showFiles)
+            ? h('section', { className: 'pm-pane pm-files', style: sceneStyle('file') },
+              sceneTag('file'),
             h('div', { className: 'pm-pane-head' },
               h('span', { className: 'pm-pane-title' }, '本地文件'),
               h('div', { className: 'pm-pane-tools' },
@@ -1749,7 +1825,8 @@ window.__ModuleLoader__.load({
             : null,
 
           /* 编辑器 / 预览 */
-          h('section', { className: 'pm-pane pm-editor' },
+          h('section', { className: 'pm-pane pm-editor', style: sceneStyle('view') },
+            sceneTag('view'),
             h('div', { className: 'pm-pane-head' },
               h('span', { className: 'pm-pane-title pm-editor-name', title: sel ? sel.rel : '' },
                 sel ? sel.info.name : '未选择文件'),
@@ -1875,24 +1952,23 @@ window.__ModuleLoader__.load({
               : null),
 
           /* 智能体 */
-          showAgent ? h(AgentPane, {
-            project,
-            presets: props.presets,
-            get,
-            say,
-            patch,
-            briefBusy: busyBrief,
-            onBrief: runBrief,
-            onCopyLaunch: copyLaunch,
-            onCopyModule: copyModule,
-            onOpenLead: openLead,
-            onRebind: async () => {
-              if (await props.ask('解除当前会话绑定并新建一个主智能体会话？')) {
-                patch({ leadSessionId: null });
-                say('已解除绑定，再点「新建主智能体会话」即可');
-              }
-            }
-          }) : null
+          (scene ? Boolean(scenePanel('harness')) : showAgent)
+            ? (scene
+              ? h('section', { className: 'pm-pane pm-scene-agent', style: sceneStyle('harness') },
+                sceneTag('harness'),
+                h(AgentPane, agentProps))
+              : h(AgentPane, agentProps))
+            : null,
+
+          /* 场景保留位 */
+          scene && scenePanel('reserved')
+            ? h('section', { className: 'pm-pane pm-reserved', style: sceneStyle('reserved') },
+              sceneTag('reserved'),
+              h('div', { className: 'pm-reserved-body' },
+                h('p', { className: 'pm-reserved-title' }, '保留位'),
+                h('p', { className: 'pm-muted' }, '这里是「工具位」，现在是占位卡。想换成网页 / 清单 / 图表，改 scenarios 里这块的 type 就行。'),
+                h('p', { className: 'pm-muted' }, '当前场景：' + (scene.name || scene.id) + ' · 来源 ' + (scene.source === 'data' ? '数据目录' : '插件包'))))
+            : null
         )
       );
     }
@@ -2131,6 +2207,7 @@ window.__ModuleLoader__.load({
       const [askState, setAskState] = useState(null);
       const [view, setView] = useState('project');
       const [tab, setTab] = useState('project');
+      const [scenarios, setScenarios] = useState([]);
 
       const say = useCallback((text, tone) => setToast({ text, tone: tone || 'ok', at: Date.now() }), []);
 
@@ -2160,12 +2237,29 @@ window.__ModuleLoader__.load({
             if (current && (value.projects || []).some((item) => item.id === current)) return current;
             return value.projects && value.projects.length ? value.projects[0].id : null;
           });
+          try {
+            const layouts = await call('/scenarios');
+            if (layouts && Array.isArray(layouts.items)) setScenarios(layouts.items);
+          } catch {
+            /* 场景读不到不影响主流程 */
+          }
         } catch (err) {
           setError('读取项目台账失败：' + msg(err));
         } finally {
           setLoading(false);
         }
       }, []);
+
+      const reloadScenarios = useCallback(async () => {
+        try {
+          const value = await post('/scenarios/refresh', {});
+          const items = value && Array.isArray(value.items) ? value.items : [];
+          setScenarios(items);
+          say('场景已刷新：' + items.length + ' 个');
+        } catch (err) {
+          say('刷新场景失败：' + msg(err), 'error');
+        }
+      }, [say]);
 
       useEffect(() => {
         refresh();
@@ -2388,7 +2482,9 @@ window.__ModuleLoader__.load({
             say,
             ask,
             onPatched,
-            onDelete: removeProject
+            onDelete: removeProject,
+            scenarios,
+            onRefreshScenarios: reloadScenarios
           })
           : h('section', {
             className: 'pm-main pm-main-empty',
@@ -2670,6 +2766,14 @@ window.__ModuleLoader__.load({
       '.pm-picker-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-caption);}',
       '.pm-chat-notice{margin:2px 0 6px;padding:5px 8px;font-size:11.5px;line-height:1.5;border-left:2px solid var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2);border-radius:0 var(--dsw-radius-sm) var(--dsw-radius-sm) 0;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;}',
       '.pm-chat-composer{position:relative;}',
+      '.pm-layout-select{height:24px;padding:0 4px;font-size:11.5px;border-radius:var(--dsw-radius-sm);max-width:190px;}',
+      '.pm-scene{gap:8px;}',
+      '.pm-scene > .pm-pane{display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;}',
+      '.pm-scene-tag{display:flex;align-items:baseline;gap:8px;padding:4px 9px 0;font-size:11px;color:var(--dsw-alias-label-caption);flex:0 0 auto;min-width:0;}',
+      '.pm-scene-name{font-weight:600;color:var(--dsw-alias-label-secondary);flex:0 0 auto;}',
+      '.pm-scene-sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-reserved-body{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:6px;height:100%;padding:12px;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);margin:6px 8px 8px;}',
+      '.pm-reserved-title{margin:0;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary);}',
     ].join('\n');
 
     /* ------------------------------------------------------------ 注册 */

@@ -6,14 +6,15 @@
 
 ```
 ┌ 项目 ─┬─ 主区 ──────────────────────────────────────────────────┐
-│ 总览  │ 项目视图：项目名 · 目录 · 计数          [打开文件夹]     │
+│ 总览  │ 项目名 · 目录 · 计数    [布局▾][⟳ 场景][打开文件夹]    │
 │ A 项目│ ┌ 本地文件 ┬ 编辑器 / 预览 ────────┬ 智能体 ─────────┐ │
 │ B 项目│ │ 文件树   │ 文本就地编辑 / 预览   │ 对话 + 模块     │ │
 │ ＋添加│ │          │                       │ @//模型/权限    │ │
 │       │ └──────────┴───────────────────────┴─────────────────┘ │
+│       │ 选场景后 = 按 col/row/w/h 排的网格（见「场景布局」）    │
 └───────┴──────────────────────────────────────────────────────────┘
 ┌ 版本 ───────────────────────────────────────────────────────────┐
-│ 当前 v2.4.0 · 变更日志 · 提交记录（git / GitHub / 打包快照） │
+│ 当前 v2.5.0 · 变更日志 · 提交记录（git / GitHub / 打包快照） │
 │ 历史快照（每次启动/手动/回滚前自动记录）                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -53,7 +54,17 @@
 - 项目列表右上角 `刷新` 重新读台账与统计（不会丢当前选中）。
 - 每个项目在 DSH 侧自动建一个工作区（workspace），用于承载该项目的会话；已有同路径工作区时直接复用，不重复创建。
 - 移除：`移除` 只删登记。删除前会二次确认，磁盘文件不受影响。
-- 版面：项目视图表头三个按钮——`文件树` 收起/展开左栏、`AI 栏` 收起/展开右栏、`专注` 一次只留文档（再点恢复三栏）。偏好存在浏览器 `localStorage`：`dafeiyu.pane.files`、`dafeiyu.pane.agent`，值为 `on`/`off`；`.pm-body` 会带 `no-files` / `no-agent` 类切换栅格列数。
+- 版面：默认三栏，表头三个按钮——`文件树` 收起/展开左栏、`AI 栏` 收起/展开右栏、`专注` 一次只留文档（再点恢复三栏）。偏好存在浏览器 `localStorage`：`dafeiyu.pane.files`、`dafeiyu.pane.agent`，值为 `on`/`off`；`.pm-body` 会带 `no-files` / `no-agent` 类切换栅格列数。表头还有「布局」下拉与 `⟳ 场景`，切到场景模板后按网格排布（见「场景布局」）。
+
+## 场景布局
+
+- 入口：项目视图表头的「布局」下拉。`三栏布局` = 老样子；选中某个场景后，主区改成 CSS Grid，按每个面板的 `col / row / w / h` 摆位（`gridColumn: col / span w`，`gridRow: row / span h`），列数 = `max(col + w - 1)`，行数 = `max(row + h - 1)`，都夹在 12 以内。
+- 项目上的绑定字段是 `project.layout`（存场景 `id`，空串 = 三栏），切布局走 `POST /project/update` 的 `{patch:{layout}}`，存在 `state.json` 里，按项目记住。
+- 面板类型：`view`（文档 / 编辑器区，包含预览、AI 润色按钮）、`file`（文件树）、`harness`（主智能体对话 `AgentPane`）、`reserved`（占位卡，显示标题与「改 type 就能换」的提示）。未知 `type` 一律当 `reserved`。
+- 场景来源两处，同名 `id` 以数据目录为准：插件包 `<插件目录>/scenarios/*.json`、`<数据目录>/scenarios/*.json`。点表头 `⟳ 场景` 调 `POST /scenarios/refresh` 重新读，最多 40 个。
+- 内置 `scenarios/layout-doc.json`：4 列 × 5 行，`dc-doc`(view 1,1,3×3)、`dc-file`(file 4,1,1×3)、`dc-extra`(reserved 1,4,2×2)、`dc-ai`(harness 3,4,2×2)。
+- 场景模式下，表头的「文件树 / AI 栏 / 专注」三个折叠按钮会隐藏（面板显不显示由场景决定）；`.pm-body` 带 `pm-scene` 类，面板外层 `.pm-pane` 各自 `overflow:hidden` 独立滚动。
+- 自定义：复制包里的 json 到 `<数据目录>/scenarios/`，改 `id` / `name` / `description` / `panels`（`col,row` 从 1 起，`w,h ≥ 1`）即可，重新 `⟳` 后出现在下拉里；不用改包，升级也不会被覆盖。
 
 ## 版本
 
@@ -148,6 +159,8 @@ AI（主智能体或子智能体）直接在磁盘上改同一个文件时，编
 | POST | `/composer/permission` | `{projectId \| target, preset}` 切换权限模式（执行 `/permission <preset>`） |
 | POST | `/command` | `{projectId \| target, line}` 执行斜杠命令（`line` 必须以 `/` 开头） |
 | POST | `/settings/update` | `{patch}` 目前支持 `overviewSessionId` |
+| GET | `/scenarios` | 可用场景模板：`{items:[{id,name,description,layout,theme,cols,rows,source,panels[]}]}`（包内 + 数据目录，同名以数据目录为准，最多 40） |
+| POST | `/scenarios/refresh` | 重新扫描两个 `scenarios/` 目录，返回 `{items, refreshedAt}` |
 | POST | `/openlink` | `{url}` 用系统默认浏览器打开链接（版本页「逛仓库」用） |
 | GET | `/version` | 当前版本 + 变更日志 + 代码指纹 + 数据目录 + 历史快照 + `repositoryUrl` + `commits`（本地 git / GitHub / 包内 gitlog.json，`source` 分别为 `git` / `github` / `bundled`） |
 | POST | `/version/snapshot` | `{note?}` 手动备份当前代码 |
@@ -162,6 +175,7 @@ AI（主智能体或子智能体）直接在磁盘上改同一个文件时，编
 - 版本快照：`$DSH_HOME/dafeiyu/versions/<版本号>-<时间戳>/` + `versions/history.json`。
 - 面板里填的仓库地址：`$DSH_HOME/dafeiyu/state.json` 的 `settings.repositoryUrl`（与项目台账同一个文件）。
 - 面板里选的模型：同一个 `state.json` 的 `settings.models`，键是会话 id，值是 `{provider, model, reasoningEffort}`。
+- 场景模板：包内 `<插件目录>/scenarios/*.json`（随安装包发布），用户自定义放 `$DSH_HOME/dafeiyu/scenarios/*.json`（同名 `id` 覆盖包内）；项目用哪套记在 `state.json` 的 `projects[].layout`（空 = 三栏）。
 - 总览报告：`$DSH_HOME/dafeiyu/reports/`；项目内报告：`<项目>/_pm/`。
 - 路径：所有文件操作都限制在项目根目录内（`path.relative` 校验，越界 403）。
 - 文本上限 1 MB，超过只读预览；请求体上限 4 MB。

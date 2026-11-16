@@ -17,6 +17,9 @@ $files = 'index.js', 'client.js', 'package.json', 'version.json', 'cordis.patch.
 foreach ($name in $files) { Copy-Item (Join-Path $root $name) (Join-Path $stage ('package\' + $name)) }
 Copy-Item (Join-Path $root 'locale') (Join-Path $stage 'package\locale') -Recurse
 Copy-Item (Join-Path $root 'docs') (Join-Path $stage 'package\docs') -Recurse
+if (Test-Path (Join-Path $root 'scenarios')) {
+  Copy-Item (Join-Path $root 'scenarios') (Join-Path $stage 'package\scenarios') -Recurse
+}
 
 # embed recent git commits so an installed copy can show them offline
 $logLines = @()

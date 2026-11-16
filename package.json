@@ -1,9 +1,9 @@
 {
   "name": "@local/dafeiyu",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
-  "description": "大肥鱼：模块化的本地工作台。项目（文件树 / 就地编辑 / 文档内嵌预览 / 面板内和主智能体对话）+ 站点台账（环境分组与状态灯）+ 版本中心（变更日志、快照与一键回滚）。",
+  "description": "大肥鱼：模块化的本地工作台。项目（文件树 / 就地编辑 / 文档内嵌预览 / 场景布局 / 面板内和主智能体对话）+ 版本中心（变更日志、快照与一键回滚）。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -19,6 +19,7 @@
     "icon.svg",
     "version.json",
     "locale",
+    "scenarios",
     "docs",
     "README.md",
     "gitlog.json"

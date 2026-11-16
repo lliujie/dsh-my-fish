@@ -1,13 +1,26 @@
 {
   "name": "@local/dafeiyu",
   "display": "大肥鱼",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "releasedAt": "2026-11-16",
   "repository": {
     "type": "git",
     "url": "https://github.com/lliujie/dsh-my-fish"
   },
   "changelog": [
+    {
+      "version": "2.5.0",
+      "date": "2026-11-16",
+      "title": "场景模板：文档 + 文件 + 保留位 + AI（layout-doc）",
+      "changes": [
+        "项目表头新增「布局」选择：三栏（默认）/ 场景模板，随时切换，按项目记住",
+        "内置场景 scenarios/layout-doc.json：文档区占 3×3、右上文件 1×3、下方工具位 2×2、右下 AI 2×2（4 列 × 5 行网格）",
+        "面板类型支持 view（文档/编辑）、file（文件树）、harness（AI 面板）、reserved（工具位占位，可换成网页/清单/图表）",
+        "表头新增 ⟳ 刷新：重新读取场景文件（包内 scenarios/ 与数据目录 scenarios/ 都读，同名以数据目录为准）",
+        "新增接口 GET /scenarios、POST /scenarios/refresh；项目多一个 layout 字段（存场景 id，空 = 三栏）",
+        "自定义场景：把 layout-doc.json 复制到 <数据目录>/scenarios/ 改名改布局即可，不用改包"
+      ]
+    },
     {
       "version": "2.4.0",
       "date": "2026-11-16",
