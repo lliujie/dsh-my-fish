@@ -1970,12 +1970,14 @@ window.__ModuleLoader__.load({
       const [info, setInfo] = useState(null);
       const [error, setError] = useState('');
       const [busy, setBusy] = useState('');
+      const [repoDraft, setRepoDraft] = useState('');
 
       const load = useCallback(async () => {
         try {
           const value = await call('/version');
           setInfo(value);
           setError('');
+          setRepoDraft(String(value.repositoryUrl || (value.repository && value.repository.url) || ''));
         } catch (err) {
           setError('读取版本信息失败：' + msg(err));
         }
@@ -1984,6 +1986,20 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         load();
       }, [load]);
+
+      const saveRepo = useCallback(async (nextUrl) => {
+        setBusy('repo');
+        try {
+          const value = await post('/version/repository', { url: nextUrl === undefined ? repoDraft.trim() : nextUrl });
+          setRepoDraft(value.repositoryUrl || '');
+          say(value.repositoryUrl ? '仓库地址已保存，正在读提交记录' : '已清空仓库地址');
+          await load();
+        } catch (err) {
+          say('保存仓库地址失败：' + msg(err), 'error');
+        } finally {
+          setBusy('');
+        }
+      }, [load, repoDraft, say]);
 
       const backup = useCallback(async () => {
         setBusy('backup');
@@ -2090,6 +2106,28 @@ window.__ModuleLoader__.load({
                     .catch((err) => say('打开失败：' + msg(err), 'error'))
                 }, '逛仓库')
                 : null),
+            h('div', { className: 'pm-repo' },
+              h('input', {
+                className: 'pm-input',
+                placeholder: 'https://github.com/你的账号/dafeiyu',
+                value: repoDraft,
+                onChange: (event) => setRepoDraft(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') saveRepo();
+                }
+              }),
+              h('button', {
+                className: 'pm-btn is-primary',
+                onClick: () => saveRepo(),
+                disabled: busy === 'repo'
+              }, busy === 'repo' ? h(Spinner) : null, '保存'),
+              repoDraft
+                ? h('button', {
+                  className: 'pm-btn',
+                  onClick: () => saveRepo(''),
+                  disabled: busy === 'repo'
+                }, '清除')
+                : null),
             commits && commits.available
               ? h('div', { className: 'pm-history' },
                 (commits.commits || []).map((item) => h('div', {
@@ -2106,7 +2144,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'pm-card-hint' },
               commits && commits.source === 'git'
                 ? '来自插件目录里的本地 git 仓库' + (commits.branch ? '（分支 ' + commits.branch + '）' : '') + '，最近 20 条'
-                : '读的是 version.json 里 repository.url 指向的 GitHub 公开仓库；填上仓库地址后，装到配置档里也能看到提交记录')),
+                : '在上面的输入框里填 GitHub 仓库地址，存一次就记住（存在数据目录里，重装也不丢）；也可以写在 version.json 的 repository.url 里')),
 
           h('section', { className: 'pm-card' },
             h('div', { className: 'pm-card-title' }, '历史快照'),
@@ -2561,6 +2599,8 @@ window.__ModuleLoader__.load({
       '.pm-card-title{font-size:12px;font-weight:600;}',
       '.pm-card-note{margin:0;font-size:11px;color:var(--dsw-alias-label-caption);line-height:1.5;}',
       '.pm-card-hint{margin:0;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-repo{display:flex;align-items:center;gap:6px;margin:6px 0 2px;}',
+      '.pm-repo .pm-input{flex:1 1 auto;min-width:0;font-size:11.5px;}',
       '.pm-actions{display:flex;flex-wrap:wrap;gap:5px;}',
       '.pm-block{width:100%;justify-content:center;}',
       '.pm-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:26px;padding:0 9px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap;}',

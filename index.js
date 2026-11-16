@@ -174,7 +174,7 @@ async function loadState(root) {
     projects: [],
     siteGroups: DEFAULT_SITE_GROUPS.map((item) => ({ ...item })),
     sites: [],
-    settings: { overviewSessionId: null }
+    settings: { overviewSessionId: null, repositoryUrl: '' }
   };
   if (parsed && Array.isArray(parsed.projects)) {
     state.projects = parsed.projects.map(normalizeProject).filter(Boolean);
@@ -190,6 +190,9 @@ async function loadState(root) {
     state.settings.overviewSessionId = typeof parsed.settings.overviewSessionId === 'string'
       ? parsed.settings.overviewSessionId
       : null;
+    state.settings.repositoryUrl = typeof parsed.settings.repositoryUrl === 'string'
+      ? parsed.settings.repositoryUrl.trim()
+      : '';
   }
   cache = state;
   cacheRoot = root;
@@ -427,13 +430,23 @@ function githubSlug(url) {
 async function githubLog(repositoryUrl, limit = 20) {
   const slug = githubSlug(repositoryUrl);
   if (!slug) return { source: 'github', available: false, commits: [], remote: String(repositoryUrl || ''), error: '仓库地址不像 GitHub' };
+  const token = String(process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '').trim();
+  const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dafeiyu-status/1.0' };
+  if (token) headers.authorization = `Bearer ${token}`;
   try {
     const res = await fetch(`https://api.github.com/repos/${slug.owner}/${slug.repo}/commits?per_page=${limit}`, {
-      headers: { accept: 'application/vnd.github+json', 'user-agent': 'dafeiyu-status/1.0' },
+      headers,
       signal: AbortSignal.timeout(8000)
     });
     if (!res.ok) {
-      return { source: 'github', available: false, commits: [], remote: String(repositoryUrl), error: `GitHub 返回 HTTP ${res.status}` };
+      let hint = `GitHub 返回 HTTP ${res.status}`;
+      if (res.status === 404) hint = 'GitHub 上找不到这个仓库（地址写错，或者仓库是私有的）';
+      if (res.status === 403 || res.status === 429) {
+        hint = token
+          ? 'GitHub 限流了（token 额度用完或权限不足），过一会儿再试'
+          : 'GitHub 限流了（未登录每小时 60 次，本机出口 IP 已经用完）。过一会儿再试，或者给 DSH 设一个 GITHUB_TOKEN 环境变量';
+      }
+      return { source: 'github', available: false, commits: [], remote: String(repositoryUrl), error: hint };
     }
     const list = await res.json();
     const commits = (Array.isArray(list) ? list : []).map((item) => {
@@ -458,13 +471,14 @@ async function githubLog(repositoryUrl, limit = 20) {
   }
 }
 
-/** 版本页要显示的提交记录：优先本地仓库，其次 GitHub */
-async function commitLog(manifest, limit = 20) {
+/** 版本页要显示的提交记录：优先本地仓库，其次面板里配的地址，再次 version.json */
+async function commitLog(manifest, limit = 20, settingsUrl = '') {
   const local = await localGitLog(limit);
   if (local.available) return local;
   const repository = manifest && manifest.repository ? manifest.repository : null;
-  const url = typeof repository === 'string' ? repository : (repository && repository.url) || '';
-  if (!url) return { source: 'none', available: false, commits: [], remote: '', error: '还没配置 GitHub 仓库地址' };
+  const fromManifest = typeof repository === 'string' ? repository : (repository && repository.url) || '';
+  const url = String(settingsUrl || '').trim() || fromManifest;
+  if (!url) return { source: 'none', available: false, commits: [], remote: '', error: '还没配置 GitHub 仓库地址：在版本页的输入框里填一下仓库地址就行' };
   const remote = await githubLog(url, limit);
   return remote;
 }
@@ -1810,13 +1824,15 @@ async function handleGet(ctx, req, res, route, params, root) {
         restorable: Boolean(entry.dir) && (!snapshotName || !currentName || snapshotName === currentName)
       });
     }
-    const commits = await commitLog(await readPackageVersion(), 20);
+    const repositoryUrl = String(state.settings?.repositoryUrl || '').trim();
+    const commits = await commitLog(await readPackageVersion(), 20, repositoryUrl);
     sendJson(res, 200, {
       ok: true,
       value: {
         ...info,
         dataDir: root,
         hash,
+        repositoryUrl,
         history: entries,
         commits
       }
@@ -2027,6 +2043,23 @@ async function handlePost(ctx, req, res, route, root) {
   if (route === '/sites/probe') {
     const fresh = await probeSites(state, payload.ids);
     sendJson(res, 200, { ok: true, value: { fresh, statuses: siteStatusSnapshot() } });
+    return;
+  }
+
+  if (route === '/version/repository') {
+    const raw = String(payload.url || '').trim();
+    if (!raw) {
+      state.settings.repositoryUrl = '';
+      await saveState(root, state);
+      sendJson(res, 200, { ok: true, value: { repositoryUrl: '' } });
+      return;
+    }
+    if (!/^https?:\/\//i.test(raw) || !githubSlug(raw)) {
+      throw fail(400, 'BAD_URL', '要填 GitHub 仓库地址，例如 https://github.com/你的账号/dafeiyu');
+    }
+    state.settings.repositoryUrl = raw;
+    await saveState(root, state);
+    sendJson(res, 200, { ok: true, value: { repositoryUrl: raw } });
     return;
   }
 

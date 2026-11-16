@@ -1,13 +1,24 @@
 {
   "name": "@local/dafeiyu",
   "display": "大肥鱼",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "releasedAt": "2026-11-16",
   "repository": {
     "type": "git",
     "url": ""
   },
   "changelog": [
+    {
+      "version": "2.1.1",
+      "at": "2026-11-16",
+      "title": "仓库地址在面板里就能填，不用改包重装",
+      "changes": [
+        "版本页「提交记录」上方新增输入框：粘上 GitHub 仓库地址点保存即可读取，存在数据目录里，重装不丢",
+        "读提交记录优先用面板里配的地址，其次 version.json 的 repository.url；本地有 .git 时仍优先读本地",
+        "支持 GITHUB_TOKEN / GH_TOKEN 环境变量，绕开未登录的每小时 60 次限流；限流时提示改成能看懂的话",
+        "新增 POST /dafeiyu/api/version/repository 接口（空地址即清除）"
+      ]
+    },
     {
       "version": "2.1.0",
       "at": "2026-11-16",
