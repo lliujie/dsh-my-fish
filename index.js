@@ -7,7 +7,6 @@
  *  3. 生成「协作档案」：把项目与子智能体模块名册写成 markdown，供主智能体分派
  *  4. 用系统默认程序打开 docx / pptx / xlsx / pdf 等文档
  *  5. 把 docx / xlsx / pptx 渲染成图片，供面板内嵌预览（内置 libreoffice-kit 引擎）
- *  6. 站点台账：环境分组 + HTTP 状态探测
  *  7. 版本中心：当前版本、变更日志、快照备份、一键回滚
  *
  * 客户端通过同源 HTTP（/dafeiyu/api）访问这里的接口。
@@ -172,19 +171,10 @@ async function loadState(root) {
   const state = {
     version: 2,
     projects: [],
-    siteGroups: DEFAULT_SITE_GROUPS.map((item) => ({ ...item })),
-    sites: [],
     settings: { overviewSessionId: null, repositoryUrl: '' }
   };
   if (parsed && Array.isArray(parsed.projects)) {
     state.projects = parsed.projects.map(normalizeProject).filter(Boolean);
-  }
-  if (parsed && Array.isArray(parsed.siteGroups)) {
-    const groups = parsed.siteGroups.map(normalizeSiteGroup).filter(Boolean);
-    if (groups.length) state.siteGroups = groups.sort((a, b) => a.order - b.order);
-  }
-  if (parsed && Array.isArray(parsed.sites)) {
-    state.sites = parsed.sites.map(normalizeSite).filter(Boolean);
   }
   if (parsed && parsed.settings && typeof parsed.settings === 'object') {
     state.settings.overviewSessionId = typeof parsed.settings.overviewSessionId === 'string'
@@ -208,131 +198,6 @@ async function saveState(root, state) {
   cache = state;
   cacheRoot = root;
   return state;
-}
-
-/* -------------------------------------------------------------- 站点台账 */
-
-/** 一个站点 = 用户自己命名的一组网址；默认给一个，用户可增删改名 */
-const DEFAULT_SITE_GROUPS = [{ id: 'default', name: '我的站点', order: 0 }];
-const SITE_PROBE_TIMEOUT = 8000;
-const SITE_ACCOUNT_LIMIT = 20;
-
-function cleanText(value, limit, fallback = '') {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text) return fallback;
-  // 全是问号说明这段文字在某处被按 ANSI 编码写过，留着会把界面显示成「????」
-  if (/^[?\uFF1F\s]+$/.test(text)) return fallback;
-  return text.slice(0, limit);
-}
-
-function normalizeSiteGroup(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const groupName = cleanText(raw.name, 40);
-  if (!groupName) return null;
-  return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id : newId('g'),
-    name: groupName,
-    note: cleanText(raw.note, 200),
-    order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 100,
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString()
-  };
-}
-
-/** 一个网站下可以挂多条登录账号；密码只在本地数据目录里存明文，界面默认打码 */
-function normalizeAccount(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const username = cleanText(raw.username, 120);
-  const password = typeof raw.password === 'string' ? raw.password.slice(0, 200) : '';
-  const label = cleanText(raw.label, 40);
-  const note = cleanText(raw.note, 120);
-  if (!username && !password && !label && !note) return null;
-  return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id : newId('a'),
-    label: label || username || '账号',
-    username,
-    password,
-    note
-  };
-}
-
-function normalizeSite(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const url = typeof raw.url === 'string' ? raw.url.trim() : '';
-  if (!url) return null;
-  const siteName = cleanText(raw.name, 60, url);
-  const accounts = Array.isArray(raw.accounts)
-    ? raw.accounts.map(normalizeAccount).filter(Boolean).slice(0, SITE_ACCOUNT_LIMIT)
-    : [];
-  const now = new Date().toISOString();
-  return {
-    id: typeof raw.id === 'string' && raw.id ? raw.id : newId('s'),
-    groupId: typeof raw.groupId === 'string' && raw.groupId ? raw.groupId : 'default',
-    name: siteName,
-    url,
-    note: cleanText(raw.note, 300),
-    accounts,
-    check: raw.check !== false,
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now
-  };
-}
-
-/** 最近一次探测结果，键为站点 id；进程内存，不落盘 */
-const siteStatusCache = new Map();
-
-function siteStatusSnapshot() {
-  const map = {};
-  for (const [id, item] of siteStatusCache.entries()) map[id] = item;
-  return map;
-}
-
-async function probeSite(site) {
-  const started = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SITE_PROBE_TIMEOUT);
-  try {
-    const response = await fetch(site.url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { 'user-agent': 'dafeiyu-status/1.0' }
-    });
-    try {
-      if (response.body && typeof response.body.cancel === 'function') await response.body.cancel();
-    } catch {
-      /* 不读响应体 */
-    }
-    const status = {
-      id: site.id,
-      ok: Boolean(response.ok),
-      status: response.status,
-      ms: Date.now() - started,
-      at: new Date().toISOString(),
-      error: response.ok ? '' : `HTTP ${response.status}`
-    };
-    siteStatusCache.set(site.id, status);
-    return status;
-  } catch (error) {
-    const status = {
-      id: site.id,
-      ok: false,
-      status: 0,
-      ms: Date.now() - started,
-      at: new Date().toISOString(),
-      error: error && error.name === 'AbortError' ? '超时' : String(error && error.message ? error.message : error)
-    };
-    siteStatusCache.set(site.id, status);
-    return status;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function probeSites(state, ids) {
-  const wanted = Array.isArray(ids) && ids.length ? new Set(ids) : null;
-  const targets = state.sites.filter((site) => site.check !== false && (!wanted || wanted.has(site.id)));
-  if (!targets.length) return [];
-  return Promise.all(targets.map((site) => probeSite(site)));
 }
 
 /* -------------------------------------------------------------- 版本中心 */
@@ -763,6 +628,31 @@ function bucketOf(fileName) {
   return 'other';
 }
 
+
+/* 用系统默认浏览器打开链接（版本页「逛仓库」等用；不经过 shell 二次解析，避免 & 被吃掉） */
+function openUrlInBrowser(url) {
+  return new Promise((resolve, reject) => {
+    let target = String(url || '').trim();
+    if (!/^https?:\/\//i.test(target)) target = `https://${target}`;
+    let child = null;
+    try {
+      if (process.platform === 'win32') {
+        child = spawn('explorer.exe', [target], { detached: true, stdio: 'ignore', windowsHide: true });
+      } else if (process.platform === 'darwin') {
+        child = spawn('open', [target], { detached: true, stdio: 'ignore' });
+      } else {
+        child = spawn('xdg-open', [target], { detached: true, stdio: 'ignore' });
+      }
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    child.on('error', reject);
+    child.unref();
+    resolve(target);
+  });
+}
+
 /* -------------------------------------------------------------- 读文件 */
 
 function decodeText(buffer) {
@@ -1087,30 +977,6 @@ function openWithSystem(abs) {
   });
 }
 
-/* 站点链接：交给系统默认浏览器（不经过 shell 二次解析，避免 & 之类被吃掉） */
-function openUrlInBrowser(url) {
-  return new Promise((resolve, reject) => {
-    let target = String(url || '').trim();
-    if (!/^https?:\/\//i.test(target)) target = `https://${target}`;
-    let child = null;
-    try {
-      if (process.platform === 'win32') {
-        /* explorer.exe 直接吃 URL，不需要 cmd 转义 */
-        child = spawn('explorer.exe', [target], { detached: true, stdio: 'ignore', windowsHide: true });
-      } else if (process.platform === 'darwin') {
-        child = spawn('open', [target], { detached: true, stdio: 'ignore' });
-      } else {
-        child = spawn('xdg-open', [target], { detached: true, stdio: 'ignore' });
-      }
-    } catch (error) {
-      reject(error);
-      return;
-    }
-    child.on('error', reject);
-    child.unref();
-    resolve(target);
-  });
-}
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -1865,18 +1731,7 @@ async function handleGet(ctx, req, res, route, params, root) {
         projects,
         presets: MODULE_PRESETS,
         settings: state.settings,
-        siteGroups: state.siteGroups,
-        sites: state.sites,
-        statuses: siteStatusSnapshot()
       }
-    });
-    return;
-  }
-
-  if (route === '/sites') {
-    sendJson(res, 200, {
-      ok: true,
-      value: { groups: state.siteGroups, sites: state.sites, statuses: siteStatusSnapshot() }
     });
     return;
   }
@@ -2094,33 +1949,6 @@ async function handlePost(ctx, req, res, route, root) {
     await saveState(root, state);
     if (removed) statCache.delete(removed.root);
     sendJson(res, 200, { ok: true, value: { projects: state.projects } });
-    return;
-  }
-
-  if (route === '/sites/save') {
-    const groups = Array.isArray(payload.groups)
-      ? payload.groups.map(normalizeSiteGroup).filter(Boolean)
-      : state.siteGroups;
-    if (!groups.length) throw fail(400, 'BAD_GROUPS', '至少要留一个站点，网址都挂在站点下面');
-    const sorted = groups.sort((a, b) => a.order - b.order);
-    const known = new Set(sorted.map((item) => item.id));
-    // 站点被删掉时，原来挂在它下面的网址挪到第一个站点，别丢数据
-    const fallbackGroup = sorted[0].id;
-    const sites = Array.isArray(payload.sites)
-      ? payload.sites.map(normalizeSite).filter(Boolean).map((site) => (
-        known.has(site.groupId) ? site : { ...site, groupId: fallbackGroup }
-      ))
-      : state.sites;
-    state.siteGroups = sorted;
-    state.sites = sites;
-    await saveState(root, state);
-    sendJson(res, 200, { ok: true, value: { groups: state.siteGroups, sites: state.sites } });
-    return;
-  }
-
-  if (route === '/sites/probe') {
-    const fresh = await probeSites(state, payload.ids);
-    sendJson(res, 200, { ok: true, value: { fresh, statuses: siteStatusSnapshot() } });
     return;
   }
 

@@ -1,13 +1,24 @@
 {
   "name": "@local/dafeiyu",
   "display": "大肥鱼",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "releasedAt": "2026-11-16",
   "repository": {
     "type": "git",
     "url": "https://github.com/lliujie/dsh-my-fish"
   },
   "changelog": [
+    {
+      "version": "2.3.0",
+      "at": "2026-11-16",
+      "title": "去掉站点模块，只留项目 / 版本两个页签",
+      "changes": [
+        "站点模块整个删掉：页签、站点与网址台账、账号密码、面板内浏览窗口、状态探测、相关接口（/sites、/sites/save、/sites/probe）都移除了",
+        "保留「用系统浏览器打开链接」这个能力（版本页「逛仓库」还在用）",
+        "本地 state.json 里遗留的 siteGroups / sites 字段读取时会被忽略，下次保存自动清掉",
+        "删掉约 1.1 万字节的站点专用样式与组件代码，面板更轻"
+      ]
+    },
     {
       "version": "2.2.1",
       "at": "2026-11-16",
