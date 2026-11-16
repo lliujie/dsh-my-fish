@@ -9,10 +9,11 @@
 │ 总览  │ 项目视图：项目名 · 目录 · 计数          [打开文件夹]     │
 │ A 项目│ ┌ 本地文件 ┬ 编辑器 / 预览 ────────┬ 智能体 ─────────┐ │
 │ B 项目│ │ 文件树   │ 文本就地编辑 / 预览   │ 对话 + 模块     │ │
-│ ＋添加│ └──────────┴───────────────────────┴─────────────────┘ │
+│ ＋添加│ │          │                       │ @//模型/权限    │ │
+│       │ └──────────┴───────────────────────┴─────────────────┘ │
 └───────┴──────────────────────────────────────────────────────────┘
 ┌ 版本 ───────────────────────────────────────────────────────────┐
-│ 当前 v2.3.0 · 变更日志 · 提交记录（git / GitHub / 打包快照） │
+│ 当前 v2.4.0 · 变更日志 · 提交记录（git / GitHub / 打包快照） │
 │ 历史快照（每次启动/手动/回滚前自动记录）                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -33,6 +34,18 @@
 - 客户端每 2.5 秒轮询 `/chat/messages?...&limit=80`，只渲染 role=user/assistant 的文本段；`thinking` 等非文本段被过滤，system-reminder / 时间戳这类注入的 user 消息也被过滤。
 - 新建会话即 `controller.create({workspaceId | cwd})`，并把 sessionId 写回项目 `leadSessionId` 或 `settings.overviewSessionId`。
 - 面板只是轻量视图：不渲染工具卡片、图片、折叠块；要看完整轨迹点「在会话页打开」。
+
+## 输入框（对齐主工作区）
+
+对话输入框下面一条工具条，能力与主工作区对齐：
+
+- **＋ 引用文件**：点 `＋` 或直接在输入框敲 `@`，弹出项目文件列表（`GET /mentions?projectId&q`，最多 30 条，按文件名命中优先、再按路径长度），↑↓ 选择、回车或点选插入 `@相对路径 `。插入的是相对项目根的路径，主智能体的工作目录就是项目根，能直接读。
+- **/ 斜杠命令**：敲 `/` 弹出可用命令（来自宿主 `commands.list(agent)`：`acp`、`goal`、`permission`、`plan`、`export`、`feedback`、`mnemon` 等）。以 `/` 开头的输入不走发消息，而是 `POST /command` → `commands.execute(agent, line, [], signal)`，结果（`kind` / `text`）以浅色提示条回显在对话流里，最多保留 4 条。
+- **模型**：右侧模型按钮显示当前模型；点击列出 `modelCatalog()` 里所有可路由模型（两级 provider → model 拍平），选择走 `POST /composer/model` → `controller.selectModel({sessionId, provider, model, reasoningEffort})`（**扁平入参**，传 `selection` 对象会报「Select an available model before sending a message」）。选中的模型按会话记在 `state.settings.models[sessionId]`，重启后仍在。
+- **思考档位**：模型旁的档位按钮（当前 `off/low/high/max` 之一）点击循环切换，同样走 `/composer/model`。
+- **权限模式**：左侧权限按钮显示 `只读 / 标准模式 / 完全权限`，切换走 `POST /composer/permission` → 执行 `/permission <preset>` 命令；当前值从会话日志里倒序找 `permission/preset` 事件得到。
+- 未绑定会话（项目还没发过第一句话）时，模型与权限按钮点了会提示「先发一句话建好会话」——会话由第一条消息自动创建（`POST /chat/new`）。
+- 总览页只有对话与权限/模型，`＋`（引用文件）在总览禁用：总览没有项目文件，去项目页里引用。
 
 ## 项目
 
@@ -129,6 +142,11 @@ AI（主智能体或子智能体）直接在磁盘上改同一个文件时，编
 | GET | `/chat/state` | 同上，仅状态 `{running, active, queued}` |
 | POST | `/chat/new` | `{projectId \| target:'overview'}` 建会话并绑定 |
 | POST | `/chat/send` | `{projectId \| target, text}` 发消息（`mode:'queue'`） |
+| GET | `/composer` | `?projectId \| target=overview` 输入框增强数据：`{sessionId, models[], defaultSelection, selection, permission{preset,presets}, commands[], bound}` |
+| GET | `/mentions` | `?projectId&q=` 项目文件候选（最多 30 条 `{path, kind:'file'}`） |
+| POST | `/composer/model` | `{projectId \| target, provider, model, reasoningEffort?}` 切换模型并记住 |
+| POST | `/composer/permission` | `{projectId \| target, preset}` 切换权限模式（执行 `/permission <preset>`） |
+| POST | `/command` | `{projectId \| target, line}` 执行斜杠命令（`line` 必须以 `/` 开头） |
 | POST | `/settings/update` | `{patch}` 目前支持 `overviewSessionId` |
 | POST | `/openlink` | `{url}` 用系统默认浏览器打开链接（版本页「逛仓库」用） |
 | GET | `/version` | 当前版本 + 变更日志 + 代码指纹 + 数据目录 + 历史快照 + `repositoryUrl` + `commits`（本地 git / GitHub / 包内 gitlog.json，`source` 分别为 `git` / `github` / `bundled`） |
@@ -143,6 +161,7 @@ AI（主智能体或子智能体）直接在磁盘上改同一个文件时，编
 - 预览缓存：`$DSH_HOME/dafeiyu/preview/<key>/`（`manifest.json` + `page-000N.png`），14 天未访问自动清理。
 - 版本快照：`$DSH_HOME/dafeiyu/versions/<版本号>-<时间戳>/` + `versions/history.json`。
 - 面板里填的仓库地址：`$DSH_HOME/dafeiyu/state.json` 的 `settings.repositoryUrl`（与项目台账同一个文件）。
+- 面板里选的模型：同一个 `state.json` 的 `settings.models`，键是会话 id，值是 `{provider, model, reasoningEffort}`。
 - 总览报告：`$DSH_HOME/dafeiyu/reports/`；项目内报告：`<项目>/_pm/`。
 - 路径：所有文件操作都限制在项目根目录内（`path.relative` 校验，越界 403）。
 - 文本上限 1 MB，超过只读预览；请求体上限 4 MB。

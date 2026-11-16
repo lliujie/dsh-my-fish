@@ -1,13 +1,27 @@
 {
   "name": "@local/dafeiyu",
   "display": "大肥鱼",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "releasedAt": "2026-11-16",
   "repository": {
     "type": "git",
     "url": "https://github.com/lliujie/dsh-my-fish"
   },
   "changelog": [
+    {
+      "version": "2.4.0",
+      "date": "2026-11-16",
+      "title": "项目里的主智能体输入框对齐工作区：@ 选文件、/ 命令、模型与权限切换",
+      "changes": [
+        "输入框上方新增工具条：＋ 引用文件、/ 命令、当前权限模式、当前模型、思考档位",
+        "输入 @ 会列出项目文件（相对路径）并可直接选中插入，回车/点选都能用",
+        "输入 / 会列出可用斜杠命令（acp、goal、permission、plan、export、feedback、mnemon），走命令接口执行，结果以浅色提示条回显",
+        "模型选择：列出当前可路由的 provider/模型，切换走 sessionController.selectModel，按会话记住（存在数据目录）",
+        "思考档位：点模型旁的档位按钮在 off/low/high/max 之间循环",
+        "权限模式：只读 / 标准模式 / 完全权限 三档，切换走 /permission 命令",
+        "新增接口 GET /composer、GET /mentions、POST /composer/model、POST /composer/permission、POST /command"
+      ]
+    },
     {
       "version": "2.3.0",
       "at": "2026-11-16",

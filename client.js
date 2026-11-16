@@ -388,11 +388,18 @@ window.__ModuleLoader__.load({
       const isOverview = props.target === 'overview';
       const projectId = props.projectId || '';
       const query = isOverview ? 'target=overview' : 'projectId=' + encodeURIComponent(projectId);
+      const payloadBase = isOverview ? { target: 'overview' } : { projectId };
       const [chat, setChat] = useState({ loading: true, sessionId: '', items: [], status: null, error: '' });
       const [draft, setDraft] = useState('');
       const [sending, setSending] = useState(false);
       const [busy, setBusy] = useState(false);
+      const [composer, setComposer] = useState({ models: [], selection: null, permission: null, commands: [] });
+      const [picker, setPicker] = useState('');
+      const [pickIndex, setPickIndex] = useState(0);
+      const [mentions, setMentions] = useState({ items: [], loading: false });
+      const [notices, setNotices] = useState([]);
       const boxRef = useRef(null);
+      const inputRef = useRef(null);
       const say = props.say || (() => {});
 
       const load = useCallback(async (silent) => {
@@ -411,9 +418,24 @@ window.__ModuleLoader__.load({
         }
       }, [query]);
 
+      const loadComposer = useCallback(async () => {
+        try {
+          const value = await call('/composer?' + query);
+          setComposer({
+            models: value.models || [],
+            selection: value.selection || null,
+            permission: value.permission || null,
+            commands: value.commands || []
+          });
+        } catch (error) {
+          /* 输入框增强是锦上添花，失败就保持基础输入 */
+        }
+      }, [query]);
+
       useEffect(() => {
         load(false);
-      }, [load]);
+        loadComposer();
+      }, [load, loadComposer]);
 
       useEffect(() => {
         const timer = setInterval(() => load(true), 2500);
@@ -423,13 +445,36 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         const node = boxRef.current;
         if (node) node.scrollTop = node.scrollHeight;
-      }, [chat.items.length, chat.loading]);
+      }, [chat.items.length, chat.loading, notices.length]);
+
+      const mentionWord = (() => {
+        const match = /(^|\s)@([^\s@]*)$/.exec(draft);
+        return match ? match[2] : '';
+      })();
+
+      useEffect(() => {
+        if (picker !== 'file' || isOverview) return undefined;
+        let stopped = false;
+        const timer = setTimeout(async () => {
+          setMentions((prev) => ({ ...prev, loading: true }));
+          try {
+            const value = await call('/mentions?projectId=' + encodeURIComponent(projectId)
+              + '&q=' + encodeURIComponent(mentionWord));
+            if (!stopped) setMentions({ items: value.items || [], loading: false });
+          } catch (error) {
+            if (!stopped) setMentions({ items: [], loading: false });
+          }
+        }, 160);
+        return () => {
+          stopped = true;
+          clearTimeout(timer);
+        };
+      }, [picker, mentionWord, projectId, isOverview]);
 
       const startSession = async () => {
         setBusy(true);
         try {
-          const payload = isOverview ? { target: 'overview' } : { projectId };
-          const value = await post('/chat/new', payload);
+          const value = await post('/chat/new', payloadBase);
           await load(true);
           if (typeof props.onSession === 'function') props.onSession(value.sessionId);
           return value.sessionId;
@@ -441,6 +486,27 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const insertMention = (path) => {
+        setDraft((prev) => {
+          const match = /(^|\s)@([^\s@]*)$/.exec(prev);
+          const token = '@' + path + ' ';
+          if (match) return prev.slice(0, match.index + match[1].length) + token;
+          return prev + (prev && !/\s$/.test(prev) ? ' ' : '') + token;
+        });
+        setPicker('');
+        setPickIndex(0);
+        const node = inputRef.current;
+        if (node) node.focus();
+      };
+
+      const insertCommand = (name) => {
+        setDraft('/' + name + ' ');
+        setPicker('');
+        setPickIndex(0);
+        const node = inputRef.current;
+        if (node) node.focus();
+      };
+
       const send = async () => {
         const text = String(draft || '').trim();
         if (!text || sending) return;
@@ -450,10 +516,21 @@ window.__ModuleLoader__.load({
             const created = await startSession();
             if (!created) return;
           }
-          const payload = isOverview ? { target: 'overview', text } : { projectId, text };
-          await post('/chat/send', payload);
-          setDraft('');
-          await load(true);
+          if (text.startsWith('/')) {
+            const value = await post('/command', { ...payloadBase, line: text });
+            const feedback = String(value.text || '').trim();
+            setNotices((prev) => prev.concat([{
+              key: 'c' + Date.now(),
+              text: feedback || ('已执行 ' + text)
+            }]).slice(-4));
+            setDraft('');
+            await loadComposer();
+            await load(true);
+          } else {
+            await post('/chat/send', { ...payloadBase, text });
+            setDraft('');
+            await load(true);
+          }
         } catch (error) {
           say('发送失败：' + msg(error), 'error');
         } finally {
@@ -461,9 +538,105 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const bound = Boolean(chat.sessionId);
+
+      const pickModel = async (model) => {
+        setPicker('');
+        if (!bound) {
+          say('先发一句话建好会话，再换模型', 'error');
+          return;
+        }
+        try {
+          const value = await post('/composer/model', {
+            ...payloadBase,
+            provider: model.provider,
+            model: model.model,
+            reasoningEffort: model.defaultEffort
+          });
+          setComposer((prev) => ({ ...prev, selection: value.selection || prev.selection }));
+          say('已切到 ' + model.modelName, 'ok');
+        } catch (error) {
+          say('换模型失败：' + msg(error), 'error');
+        }
+      };
+
+      const cycleEffort = async () => {
+        const selection = composer.selection || null;
+        if (!bound || !selection) return;
+        const model = (composer.models || []).find((item) => item.model === selection.model) || null;
+        if (!model || !model.efforts.length) return;
+        const list = model.efforts.map((item) => item.id);
+        const current = list.indexOf(selection.reasoningEffort);
+        const wanted = list[(current + 1) % list.length];
+        try {
+          const value = await post('/composer/model', {
+            ...payloadBase,
+            provider: selection.provider,
+            model: selection.model,
+            reasoningEffort: wanted
+          });
+          setComposer((prev) => ({ ...prev, selection: value.selection || prev.selection }));
+        } catch (error) {
+          say('换档位失败：' + msg(error), 'error');
+        }
+      };
+
+      const pickPermission = async (preset) => {
+        setPicker('');
+        if (!bound) {
+          say('先发一句话建好会话，再改权限', 'error');
+          return;
+        }
+        try {
+          await post('/composer/permission', { ...payloadBase, preset: preset.id });
+          setComposer((prev) => ({
+            ...prev,
+            permission: { ...(prev.permission || {}), preset: preset.id }
+          }));
+          say('权限改成「' + preset.name + '」', 'ok');
+        } catch (error) {
+          say('改权限失败：' + msg(error), 'error');
+        }
+      };
+
+      const runPicker = () => {
+        if (picker === 'file' && mentions.items[pickIndex]) {
+          insertMention(mentions.items[pickIndex].path);
+          return true;
+        }
+        if (picker === 'command') {
+          const list = commandSuggestions;
+          if (list[pickIndex]) {
+            insertCommand(list[pickIndex].name);
+            return true;
+          }
+        }
+        return false;
+      };
+
       const running = Boolean(chat.status && chat.status.running);
       const items = chat.items || [];
       const agentName = isOverview ? '总览智能体' : '主智能体';
+      const commands = composer.commands || [];
+      const commandQuery = String(draft || '').startsWith('/') && !String(draft || '').includes('\n')
+        ? String(draft || '').slice(1).toLowerCase()
+        : null;
+      const commandSuggestions = commandQuery === null
+        ? []
+        : commands.filter((item) => !commandQuery || item.name.toLowerCase().includes(commandQuery)).slice(0, 8);
+      const selection = composer.selection || null;
+      const presetId = composer.permission && composer.permission.preset ? composer.permission.preset : '';
+      const presetName = (() => {
+        const list = (composer.permission && composer.permission.presets) || [];
+        const hit = list.find((item) => item.id === presetId);
+        return hit ? hit.name : '权限';
+      })();
+      const modelName = selection
+        ? (() => {
+          const hit = (composer.models || []).find((item) => item.model === selection.model);
+          return (hit && hit.modelName) || selection.model;
+        })()
+        : '模型';
 
       return h('section', { className: 'pm-chat' },
         h('div', { className: 'pm-chat-head' },
@@ -498,29 +671,159 @@ window.__ModuleLoader__.load({
           },
             h('div', { className: 'pm-msg-role' }, item.role === 'user' ? '我' : agentName),
             h('div', { className: 'pm-msg-text' }, item.text))),
+          notices.map((notice) => h('div', { key: notice.key, className: 'pm-chat-notice' }, notice.text)),
           sending ? h('div', { className: 'pm-chat-hint' }, h(Spinner), ' 已发送…') : null),
 
         h('div', { className: 'pm-chat-composer' },
+          picker === 'file' ? h('div', { className: 'pm-picker' },
+            h('div', { className: 'pm-picker-title' }, '引用项目里的文件'),
+            mentions.loading ? h('div', { className: 'pm-picker-empty' }, '查找中…') : null,
+            !mentions.loading && !mentions.items.length
+              ? h('div', { className: 'pm-picker-empty' }, '没有匹配的文件')
+              : null,
+            mentions.items.map((item, index) => h('button', {
+              key: item.path,
+              className: cx('pm-picker-item', index === pickIndex ? 'is-active' : ''),
+              onMouseEnter: () => setPickIndex(index),
+              onClick: () => insertMention(item.path)
+            }, h('span', { className: 'pm-picker-name' }, item.path.split('/').pop()),
+            h('span', { className: 'pm-picker-path' }, item.path)))) : null,
+
+          picker === 'command' ? h('div', { className: 'pm-picker' },
+            h('div', { className: 'pm-picker-title' }, '斜杠命令'),
+            commandSuggestions.length
+              ? null
+              : h('div', { className: 'pm-picker-empty' }, '还没有可用命令'),
+            commandSuggestions.map((item, index) => h('button', {
+              key: item.name,
+              className: cx('pm-picker-item', index === pickIndex ? 'is-active' : ''),
+              onMouseEnter: () => setPickIndex(index),
+              onClick: () => insertCommand(item.name)
+            }, h('span', { className: 'pm-picker-name' }, '/' + item.name),
+            h('span', { className: 'pm-picker-path' }, item.description || '')))) : null,
+
+          picker === 'model' ? h('div', { className: 'pm-picker is-menu' },
+            h('div', { className: 'pm-picker-title' }, '选择模型'),
+            (composer.models || []).map((item) => h('button', {
+              key: item.provider + '/' + item.model,
+              className: cx('pm-picker-item', selection && selection.model === item.model ? 'is-active' : ''),
+              onClick: () => pickModel(item)
+            }, h('span', { className: 'pm-picker-name' }, item.modelName),
+            h('span', { className: 'pm-picker-path' }, item.providerName)))) : null,
+
+          picker === 'permission' ? h('div', { className: 'pm-picker is-menu' },
+            h('div', { className: 'pm-picker-title' }, '权限模式'),
+            ((composer.permission && composer.permission.presets) || []).map((item) => h('button', {
+              key: item.id,
+              className: cx('pm-picker-item', presetId === item.id ? 'is-active' : ''),
+              onClick: () => pickPermission(item)
+            }, h('span', { className: 'pm-picker-name' }, item.name),
+            h('span', { className: 'pm-picker-path' }, item.hint || '')))) : null,
+
           h('textarea', {
             className: 'pm-chat-input',
             rows: 2,
+            ref: inputRef,
             value: draft,
-            placeholder: running ? '它正在处理，可以继续留言（会排队）' : '说点什么…（Enter 发送，Shift+Enter 换行）',
-            onChange: (event) => setDraft(event.target.value),
+            placeholder: running
+              ? '它正在处理，可以继续留言（会排队）'
+              : '说点什么…（@ 选文件、/ 用命令，Enter 发送，Shift+Enter 换行）',
+            onChange: (event) => {
+              setDraft(event.target.value);
+              const next = event.target.value;
+              if (/(^|\s)@[^\s@]*$/.test(next) && !isOverview) {
+                setPicker('file');
+              } else if (/^\/[^\s]*$/.test(next)) {
+                setPicker('command');
+              } else if (picker === 'file' || picker === 'command') {
+                setPicker('');
+              }
+            },
             onKeyDown: (event) => {
+              if (event.key === 'Escape') {
+                setPicker('');
+                return;
+              }
+              if (picker === 'file' || picker === 'command') {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setPickIndex((prev) => prev + 1);
+                  return;
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setPickIndex((prev) => (prev > 0 ? prev - 1 : 0));
+                  return;
+                }
+                if (event.key === 'Enter' && !event.shiftKey && runPicker()) {
+                  event.preventDefault();
+                  return;
+                }
+              }
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 send();
               }
             }
           }),
-          h('div', { className: 'pm-chat-actions' },
-            h('button', {
-              className: 'pm-btn is-primary',
-              onClick: send,
-              disabled: sending || !String(draft || '').trim()
-            }, sending ? h(Spinner) : null, '发送'),
-            props.actions || null)));
+
+          h('div', { className: 'pm-composer-bar' },
+            h('div', { className: 'pm-composer-left' },
+              h('button', {
+                className: cx('pm-btn is-ghost pm-icon-btn', picker === 'file' ? 'is-primary' : ''),
+                title: isOverview ? '总览没有项目文件，去项目页里引用' : '引用项目文件（也可以直接输入 @）',
+                disabled: isOverview,
+                onClick: () => {
+                  const word = mentionWord;
+                  if (!word && !/(^|\s)@[^\s@]*$/.test(draft)) setDraft((prev) => prev + (prev && !/\s$/.test(prev) ? ' ' : '') + '@');
+                  setPickIndex(0);
+                  setPicker('file');
+                  const node = inputRef.current;
+                  if (node) node.focus();
+                }
+              }, '＋'),
+              h('button', {
+                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'command' ? 'is-primary' : ''),
+                title: '斜杠命令',
+                onClick: () => {
+                  if (!String(draft).startsWith('/')) setDraft('/');
+                  setPickIndex(0);
+                  setPicker('command');
+                  const node = inputRef.current;
+                  if (node) node.focus();
+                }
+              }, '/ 命令'),
+              h('button', {
+                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'permission' ? 'is-primary' : ''),
+                title: bound ? '切换权限模式' : '先发一句话建好会话',
+                onClick: () => {
+                  setPickIndex(0);
+                  setPicker(picker === 'permission' ? '' : 'permission');
+                }
+              }, presetName)),
+
+            h('div', { className: 'pm-composer-right' },
+              selection && selection.reasoningEffort
+                ? h('button', {
+                  className: 'pm-btn is-ghost pm-chip-btn',
+                  title: '点击切换思考档位（' + selection.reasoningEffort + '）',
+                  onClick: cycleEffort
+                }, selection.reasoningEffort)
+                : null,
+              h('button', {
+                className: cx('pm-btn is-ghost pm-chip-btn', picker === 'model' ? 'is-primary' : ''),
+                title: bound ? '切换模型' : '先发一句话建好会话',
+                onClick: () => {
+                  setPickIndex(0);
+                  setPicker(picker === 'model' ? '' : 'model');
+                }
+              }, modelName),
+              h('button', {
+                className: 'pm-btn is-primary',
+                onClick: send,
+                disabled: sending || !String(draft || '').trim()
+              }, sending ? h(Spinner) : null, '发送'))),
+          props.actions || null));
     }
 
     /* ------------------------------ 总览 */
@@ -2353,6 +2656,20 @@ window.__ModuleLoader__.load({
       '.pm-input:focus-visible{border-color:var(--dsw-alias-state-business-primary);}',
       '.pm-card{background:var(--dsw-alias-bg-layer-3);}',
       '@keyframes pm-spin{to{transform:rotate(360deg);}}',
+      '.pm-composer-bar{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;padding:5px 8px;border-top:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-composer-left,.pm-composer-right{display:flex;align-items:center;gap:4px;min-width:0;}',
+      '.pm-chip-btn{height:24px;padding:0 8px;font-size:11px;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-chip-btn.is-primary{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);}',
+      '.pm-picker{position:absolute;left:8px;right:8px;bottom:100%;margin-bottom:4px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);box-shadow:var(--dsw-elevation-panel);padding:4px;z-index:40;}',
+      '.pm-picker.is-menu{left:auto;right:8px;min-width:220px;}',
+      '.pm-picker-title{padding:4px 6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-picker-empty{padding:6px;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-picker-item{display:flex;align-items:baseline;gap:8px;width:100%;padding:5px 7px;border:0;background:transparent;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-primary);font-size:12px;text-align:left;cursor:pointer;}',
+      '.pm-picker-item.is-active,.pm-picker-item:hover{background:var(--dsw-alias-bg-layer-3);}',
+      '.pm-picker-name{flex:0 0 auto;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-picker-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dsw-alias-label-caption);}',
+      '.pm-chat-notice{margin:2px 0 6px;padding:5px 8px;font-size:11.5px;line-height:1.5;border-left:2px solid var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2);border-radius:0 var(--dsw-radius-sm) var(--dsw-radius-sm) 0;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;}',
+      '.pm-chat-composer{position:relative;}',
     ].join('\n');
 
     /* ------------------------------------------------------------ 注册 */

@@ -171,7 +171,7 @@ async function loadState(root) {
   const state = {
     version: 2,
     projects: [],
-    settings: { overviewSessionId: null, repositoryUrl: '' }
+    settings: { overviewSessionId: null, repositoryUrl: '', models: {} }
   };
   if (parsed && Array.isArray(parsed.projects)) {
     state.projects = parsed.projects.map(normalizeProject).filter(Boolean);
@@ -183,6 +183,18 @@ async function loadState(root) {
     state.settings.repositoryUrl = typeof parsed.settings.repositoryUrl === 'string'
       ? parsed.settings.repositoryUrl.trim()
       : '';
+    if (parsed.settings.models && typeof parsed.settings.models === 'object') {
+      for (const [sessionId, selection] of Object.entries(parsed.settings.models)) {
+        if (!sessionId || !selection || typeof selection !== 'object') continue;
+        const model = String(selection.model || '');
+        if (!model) continue;
+        state.settings.models[sessionId] = {
+          provider: String(selection.provider || ''),
+          model,
+          reasoningEffort: String(selection.reasoningEffort || '')
+        };
+      }
+    }
   }
   cache = state;
   cacheRoot = root;
@@ -1460,6 +1472,159 @@ async function sendChat(ctx, sessionId, text) {
   return { accepted: true, requestId };
 }
 
+/* --------------------------------- 输入框增强（模型 / 权限 / @ 文件 / 斜杠） */
+
+const PERMISSION_PRESETS = [
+  { id: 'read-only', name: '只读', hint: '只能看，不能改文件' },
+  { id: 'workspace-write', name: '标准模式', hint: '能改项目文件，其它操作先问你' },
+  { id: 'danger-full-access', name: '完全权限', hint: '不再逐条征求批准' }
+];
+
+function serviceOf(ctx, name) {
+  try {
+    const service = ctx.get(name);
+    return service && typeof service === 'object' ? service : null;
+  } catch {
+    return null;
+  }
+}
+
+function agentOf(ctx, sessionId) {
+  if (!sessionId) return null;
+  const agents = serviceOf(ctx, 'agents');
+  try {
+    return (agents && typeof agents.get === 'function' ? agents.get(sessionId) : null) || null;
+  } catch {
+    return null;
+  }
+}
+
+function sessionLogOf(ctx, sessionId) {
+  const agent = agentOf(ctx, sessionId);
+  const log = agent && agent.model && agent.model.session ? agent.model.session.log : null;
+  return Array.isArray(log) ? log : [];
+}
+
+function permissionPresetOf(ctx, sessionId) {
+  const log = sessionLogOf(ctx, sessionId);
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    const event = log[index];
+    if (event && event.type === 'permission/preset' && event.data && event.data.preset) {
+      return String(event.data.preset);
+    }
+  }
+  return '';
+}
+
+function modelSelectionOf(ctx, sessionId) {
+  const log = sessionLogOf(ctx, sessionId);
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    const event = log[index];
+    const data = event && event.data;
+    if (!data) continue;
+    const pick = data.selection || data;
+    if (pick && pick.model && (data.selection || /model/i.test(String(event.type || '')))) {
+      return {
+        provider: String(pick.provider || ''),
+        model: String(pick.model),
+        reasoningEffort: String(pick.reasoningEffort || pick.effort || '')
+      };
+    }
+  }
+  return null;
+}
+
+async function modelCatalogOf(ctx) {
+  const controller = serviceOf(ctx, 'sessionController');
+  if (!controller || typeof controller.modelCatalog !== 'function') return null;
+  try {
+    return await controller.modelCatalog();
+  } catch {
+    return null;
+  }
+}
+
+function flattenCatalog(catalog) {
+  const out = [];
+  const groups = (catalog && Array.isArray(catalog.groups)) ? catalog.groups : [];
+  for (const group of groups) {
+    const models = Array.isArray(group.models) ? group.models : [];
+    for (const model of models) {
+      const efforts = model.reasoning && Array.isArray(model.reasoning.efforts) ? model.reasoning.efforts : [];
+      out.push({
+        provider: String(group.id || ''),
+        providerName: String(group.name || group.id || ''),
+        model: String(model.id || ''),
+        modelName: String(model.name || model.id || ''),
+        description: String(model.description || ''),
+        defaultEffort: String((model.reasoning && model.reasoning.defaultEffort) || ''),
+        efforts: efforts.map((effort) => ({ id: String(effort.id || ''), name: String(effort.name || effort.id || '') }))
+      });
+    }
+  }
+  return out;
+}
+
+async function commandListOf(ctx, sessionId) {
+  const agent = agentOf(ctx, sessionId);
+  const commands = serviceOf(ctx, 'commands');
+  if (!agent || !commands || typeof commands.list !== 'function') return [];
+  try {
+    const list = await commands.list(agent);
+    return (Array.isArray(list) ? list : []).map((item) => ({
+      name: String(item.name || ''),
+      description: String(item.description || ''),
+      hint: item.input && item.input.hint ? String(item.input.hint) : ''
+    })).filter((item) => item.name);
+  } catch {
+    return [];
+  }
+}
+
+async function composerValue(ctx, state, sessionId) {
+  const catalog = await modelCatalogOf(ctx);
+  const models = flattenCatalog(catalog);
+  const stored = sessionId && state.settings && state.settings.models ? state.settings.models[sessionId] : null;
+  const selection = stored || modelSelectionOf(ctx, sessionId) || (catalog && catalog.default) || null;
+  return {
+    sessionId: sessionId || '',
+    models,
+    defaultSelection: (catalog && catalog.default) || null,
+    selection: selection || null,
+    permission: {
+      preset: permissionPresetOf(ctx, sessionId),
+      presets: PERMISSION_PRESETS
+    },
+    commands: await commandListOf(ctx, sessionId)
+  };
+}
+
+async function mentionCandidates(project, query) {
+  const files = await walkFiles(project, { maxDepth: 6, limit: 3000 });
+  const keyword = String(query || '').toLowerCase();
+  const scored = [];
+  for (const file of files) {
+    const lower = file.rel.toLowerCase();
+    if (keyword && !lower.includes(keyword)) continue;
+    const nameHit = file.name.toLowerCase().includes(keyword);
+    scored.push({ path: file.rel, score: keyword ? (nameHit ? 0 : 1) : 0, size: file.size });
+  }
+  scored.sort((a, b) => (a.score - b.score) || (a.path.length - b.path.length) || a.path.localeCompare(b.path));
+  return scored.slice(0, 30).map((item) => ({ path: item.path, kind: 'file' }));
+}
+
+async function runCommand(ctx, sessionId, line) {
+  const agent = agentOf(ctx, sessionId);
+  if (!agent) throw fail(409, 'NO_AGENT', '这个会话还没活着，先发一句话再试命令');
+  const commands = serviceOf(ctx, 'commands');
+  if (!commands || typeof commands.execute !== 'function') throw fail(501, 'NO_COMMANDS', '当前 DSH 版本不支持命令');
+  const executed = await commands.execute(agent, line, [], new AbortController().signal);
+  const result = executed && executed.result ? executed.result : {};
+  const type = String(result.kind || result.type || '');
+  const text = String(result.text || result.message || '');
+  return { commandId: executed ? executed.commandId : '', kind: type, text: text.slice(0, 4000) };
+}
+
 function chatSessionId(state, params, payload) {
   const target = String(
     (payload && payload.target) || (params && params.get('target')) || ''
@@ -1789,6 +1954,21 @@ async function handleGet(ctx, req, res, route, params, root) {
     return;
   }
 
+  if (route === '/composer') {
+    const sessionId = optionalChatSessionId(state, params) || '';
+    const value = await composerValue(ctx, state, sessionId);
+    sendJson(res, 200, { ok: true, value: { ...value, bound: Boolean(sessionId) } });
+    return;
+  }
+
+  if (route === '/mentions') {
+    const project = findProject(state, String(params.get('projectId') || ''));
+    if (!project) throw fail(404, 'NO_PROJECT', '找不到这个项目');
+    const items = await mentionCandidates(project, String(params.get('q') || ''));
+    sendJson(res, 200, { ok: true, value: { items } });
+    return;
+  }
+
   if (route === '/chat/messages') {
     const sessionId = optionalChatSessionId(state, params);
     const limit = Math.min(200, Math.max(4, Number(params.get('limit')) || 40));
@@ -2104,6 +2284,58 @@ async function handlePost(ctx, req, res, route, root) {
     const sessionId = chatSessionId(state, null, payload);
     const value = await sendChat(ctx, sessionId, text);
     sendJson(res, 200, { ok: true, value: { ...value, sessionId } });
+    return;
+  }
+
+  if (route === '/composer/model') {
+    const sessionId = chatSessionId(state, null, payload);
+    const controller = requireController(ctx);
+    const pick = String(payload.model || '');
+    if (!pick) throw fail(400, 'BAD_REQUEST', '要指定模型');
+    const models = flattenCatalog(await modelCatalogOf(ctx));
+    const wanted = models.find((item) => item.model === pick
+      && (!payload.provider || item.provider === String(payload.provider))) || null;
+    if (!wanted) throw fail(400, 'BAD_MODEL', '这个模型不在可选列表里');
+    const selection = {
+      provider: String(payload.provider || wanted.provider),
+      model: pick,
+      reasoningEffort: String(payload.reasoningEffort || wanted.defaultEffort || '')
+    };
+    const result = await controller.selectModel({
+      sessionId,
+      provider: selection.provider,
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort
+    });
+    const saved = result && result.selected ? result.selected : selection;
+    if (!state.settings.models) state.settings.models = {};
+    state.settings.models[sessionId] = {
+      provider: String(saved.provider || selection.provider),
+      model: String(saved.model || selection.model),
+      reasoningEffort: String(saved.reasoningEffort || selection.reasoningEffort)
+    };
+    await saveState(root, state);
+    sendJson(res, 200, { ok: true, value: { selection: state.settings.models[sessionId] } });
+    return;
+  }
+
+  if (route === '/composer/permission') {
+    const sessionId = chatSessionId(state, null, payload);
+    const preset = String(payload.preset || '');
+    if (!PERMISSION_PRESETS.some((item) => item.id === preset)) {
+      throw fail(400, 'BAD_PRESET', '不认识的权限模式');
+    }
+    const run = await runCommand(ctx, sessionId, `/permission ${preset}`);
+    sendJson(res, 200, { ok: true, value: { preset, ...run } });
+    return;
+  }
+
+  if (route === '/command') {
+    const line = String(payload.line || '').trim();
+    if (!line.startsWith('/')) throw fail(400, 'BAD_COMMAND', '命令要以 / 开头');
+    const sessionId = chatSessionId(state, null, payload);
+    const run = await runCommand(ctx, sessionId, line);
+    sendJson(res, 200, { ok: true, value: { sessionId, ...run } });
     return;
   }
 
