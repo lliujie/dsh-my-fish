@@ -212,7 +212,7 @@ async function saveState(root, state) {
 
 /* -------------------------------------------------------------- 站点台账 */
 
-/** 一个分区 = 用户自己命名的一组网站；默认给一个，用户可增删改名 */
+/** 一个站点 = 用户自己命名的一组网址；默认给一个，用户可增删改名 */
 const DEFAULT_SITE_GROUPS = [{ id: 'default', name: '我的站点', order: 0 }];
 const SITE_PROBE_TIMEOUT = 8000;
 const SITE_ACCOUNT_LIMIT = 20;
@@ -2101,10 +2101,10 @@ async function handlePost(ctx, req, res, route, root) {
     const groups = Array.isArray(payload.groups)
       ? payload.groups.map(normalizeSiteGroup).filter(Boolean)
       : state.siteGroups;
-    if (!groups.length) throw fail(400, 'BAD_GROUPS', '至少要留一个分区，网站都挂在这个分区下面');
+    if (!groups.length) throw fail(400, 'BAD_GROUPS', '至少要留一个站点，网址都挂在站点下面');
     const sorted = groups.sort((a, b) => a.order - b.order);
     const known = new Set(sorted.map((item) => item.id));
-    // 分区被删掉时，原来挂在它下面的网站挪到第一个分区，别丢数据
+    // 站点被删掉时，原来挂在它下面的网址挪到第一个站点，别丢数据
     const fallbackGroup = sorted[0].id;
     const sites = Array.isArray(payload.sites)
       ? payload.sites.map(normalizeSite).filter(Boolean).map((site) => (

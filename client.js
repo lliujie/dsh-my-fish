@@ -1603,6 +1603,38 @@ window.__ModuleLoader__.load({
       return { tone: 'is-down', text: status.error || '连不上' };
     }
 
+    /** 从网址里取出「主机:端口」，卡片和窗口标题都靠它 */
+    function siteHost(url) {
+      const raw = String(url || '').trim();
+      if (!raw) return '';
+      const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'http://' + raw;
+      try {
+        const parsed = new URL(withScheme);
+        return parsed.host || raw;
+      } catch {
+        return raw.replace(/^https?:\/\//i, '').split(/[/?#]/)[0];
+      }
+    }
+
+    /** 用户可能只粘 10.1.2.3:8099 或域名，这里补齐协议；粘完整地址就原样用 */
+    function normalizeUrlInput(raw) {
+      const text = String(raw || '').trim();
+      if (!text) return '';
+      if (text.startsWith('//')) return 'https:' + text;
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return text;
+      const lower = text.toLowerCase();
+      const lan = /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(lower);
+      const looksLikeHost = lan || /^[^\s/]+\.[^\s/]+/.test(text) || /^[^\s/:]+:\d+/.test(text);
+      if (!looksLikeHost) return '';
+      return (lan ? 'http://' : 'https://') + text;
+    }
+
+    function maskSecret(text) {
+      const value = String(text || '');
+      if (!value) return '（没填密码）';
+      return '•'.repeat(Math.min(10, Math.max(4, value.length)));
+    }
+
     /** 账号列表：密码默认打码，点眼睛才显示；复制走剪贴板 */
     function AccountList(props) {
       const accounts = props.accounts || [];
@@ -1644,12 +1676,6 @@ window.__ModuleLoader__.load({
                 onClick: () => setShown({ ...shown, [account.id]: !shown[account.id] })
               }, shown[account.id] ? '隐藏' : '显示')
               : null))));
-    }
-
-    function maskSecret(text) {
-      const value = String(text || '');
-      if (!value) return '（没填密码）';
-      return '•'.repeat(Math.min(10, Math.max(4, value.length)));
     }
 
     /** 账号编辑表：一行一个账号 */
@@ -1696,14 +1722,15 @@ window.__ModuleLoader__.load({
               title: '删掉这条账号',
               onClick: () => remove(account.id)
             }, '删除')))
-          : h('div', { className: 'pm-hint' }, '这个网站还没有记录账号；加了以后会自动填到面板里，方便你复制登录。'),
+          : h('div', { className: 'pm-hint' }, '这个网址还没记账号。加了以后，窗口里点「账号」就能一键复制，不用再翻记录。'),
         h('button', { className: 'pm-btn is-sm', onClick: add }, '＋ 加一个账号'));
     }
 
-    /** 面板内浏览器：右上角可缩放、可复制账号、可回退到系统浏览器 */
-    function SiteViewer(props) {
+    /** 一个可以在面板里同时开多个的浏览窗口 */
+    function SiteWindow(props) {
       const site = props.site;
       const say = props.say;
+      const maxed = Boolean(props.max);
       const [zoom, setZoom] = useState(1);
       const [reloadKey, setReloadKey] = useState(0);
       const [loaded, setLoaded] = useState(false);
@@ -1722,81 +1749,100 @@ window.__ModuleLoader__.load({
       }, [site.url, reloadKey]);
 
       const accounts = site.accounts || [];
-      return h('div', { className: 'pm-modal pm-viewer' },
-        h('div', { className: 'pm-viewer-bar' },
-          h('div', { className: 'pm-viewer-title-row' },
-            h('span', { className: 'pm-viewer-title' }, site.name),
-            h('span', { className: 'pm-viewer-url' }, site.url),
-            blocked ? h('span', { className: 'pm-pill is-warn' }, '可能不允许内嵌') : null),
-          h('div', { className: 'pm-viewer-tools' },
-            accounts.length
-              ? h('button', {
-                className: 'pm-btn is-sm',
-                onClick: () => setShowAccounts(!showAccounts)
-              }, '账号 ' + accounts.length)
-              : null,
+
+      const openOut = useCallback(async () => {
+        try {
+          await post('/openlink', { url: site.url });
+        } catch (error) {
+          say('打开失败：' + msg(error), 'error');
+        }
+      }, [say, site.url]);
+
+      const frameStyle = zoom === 1
+        ? { width: '100%', height: '100%' }
+        : {
+          width: (100 / zoom) + '%',
+          height: (100 / zoom) + '%',
+          transform: 'scale(' + zoom + ')',
+          transformOrigin: '0 0'
+        };
+
+      return h('section', { className: cx('pm-win', maxed ? 'is-max' : '') },
+        h('header', { className: 'pm-win-bar' },
+          h('span', { className: 'pm-win-dot' }),
+          h('span', { className: 'pm-win-title', title: site.name + ' · ' + site.url }, site.name),
+          h('span', { className: 'pm-win-host', title: site.url }, siteHost(site.url)),
+          accounts.length
+            ? h('button', {
+              className: cx('pm-btn is-sm', showAccounts ? 'is-primary' : 'is-ghost'),
+              onClick: () => setShowAccounts(!showAccounts),
+              title: '登录账号'
+            }, '账号 ' + accounts.length)
+            : null,
+          h('span', { className: 'pm-win-tools' },
             h('button', {
               className: 'pm-btn is-sm is-ghost',
-              onClick: () => setZoom(Math.max(0.6, Number((zoom - 0.1).toFixed(2))))
-            }, '－'),
+              title: '缩小',
+              onClick: () => setZoom(Math.max(0.6, Math.round((zoom - 0.1) * 10) / 10))
+            }, '−'),
+            h('span', { className: 'pm-win-zoom' }, Math.round(zoom * 100) + '%'),
             h('button', {
               className: 'pm-btn is-sm is-ghost',
-              onClick: () => setZoom(Math.min(1.6, Number((zoom + 0.1).toFixed(2))))
+              title: '放大',
+              onClick: () => setZoom(Math.min(1.6, Math.round((zoom + 0.1) * 10) / 10))
             }, '＋'),
-            h('span', { className: 'pm-viewer-zoom' }, Math.round(zoom * 100) + '%'),
             h('button', {
               className: 'pm-btn is-sm is-ghost',
+              title: '重新加载',
               onClick: () => setReloadKey(reloadKey + 1)
             }, '刷新'),
+            h('button', { className: 'pm-btn is-sm is-ghost', title: '用系统浏览器打开', onClick: openOut }, '浏览器'),
             h('button', {
-              className: 'pm-btn is-sm',
-              onClick: async () => {
-                try {
-                  await post('/openlink', { url: site.url });
-                } catch (error) {
-                  say('打开失败：' + msg(error), 'error');
-                }
-              }
-            }, '浏览器打开'),
-            h('button', { className: 'pm-btn is-sm is-ghost', onClick: props.onClose }, '关闭'))),
+              className: 'pm-btn is-sm is-ghost',
+              title: maxed ? '还原窗口大小' : '把这个窗口放大',
+              onClick: () => props.onMax(!maxed)
+            }, maxed ? '还原' : '放大'),
+            h('button', {
+              className: 'pm-btn is-sm is-ghost is-danger',
+              title: '关掉这个窗口',
+              onClick: props.onClose
+            }, '×'))),
         showAccounts && accounts.length
-          ? h('div', { className: 'pm-viewer-accounts' },
-            h('div', { className: 'pm-viewer-accounts-hint' }, '复制后粘进登录框；面板里的网页和你平时用的浏览器不共享登录状态。'),
-            h(AccountList, { accounts, say }))
+          ? h('div', { className: 'pm-win-accounts' }, h(AccountList, { accounts: accounts, say: say }))
           : null,
-        h('div', { className: 'pm-viewer-frame-wrap' },
-          h('div', {
-            className: 'pm-viewer-frame',
-            style: { transform: 'scale(' + zoom + ')', width: (100 / zoom) + '%', height: (100 / zoom) + '%' }
-          },
+        h('div', { className: 'pm-win-body' },
+          blocked
+            ? h('div', { className: 'pm-win-blocked' },
+              h('div', { className: 'pm-win-blocked-title' }, '这个网站不让嵌在面板里'),
+              h('div', { className: 'pm-muted' }, '网站自己设了 X-Frame-Options / CSP，只允许在它自己的域名里打开。这是它那边的安全策略，插件绕不过去。'),
+              h('div', { className: 'pm-actions' },
+                h('button', { className: 'pm-btn is-primary', onClick: openOut }, '用系统浏览器打开'),
+                h('button', {
+                  className: 'pm-btn is-ghost',
+                  onClick: () => setReloadKey(reloadKey + 1)
+                }, '再试一次')))
+            : null,
+          !blocked && !loaded
+            ? h('div', { className: 'pm-win-loading' }, h(Spinner), h('span', null, '正在打开 ' + siteHost(site.url) + ' …'))
+            : null,
+          h('div', { className: 'pm-win-frame', style: { visibility: blocked ? 'hidden' : 'visible' } },
             h('iframe', {
               key: reloadKey,
-              src: site.url,
               title: site.name,
-              className: 'pm-viewer-iframe',
+              src: site.url,
+              className: 'pm-win-iframe',
+              style: frameStyle,
               referrerPolicy: 'no-referrer',
               allow: 'clipboard-read; clipboard-write; fullscreen',
-              onLoad: () => { loadedRef.current = true; setLoaded(true); }
-            })),
-          blocked
-            ? h('div', { className: 'pm-viewer-blocked' },
-              h('p', { className: 'pm-empty-title' }, '这个网站不让嵌在面板里'),
-              h('p', { className: 'pm-muted' }, '多数是站点自己设了 X-Frame-Options / CSP：浏览器的安全策略不允许被别的页面框住，插件改不了。'),
-              h('div', { className: 'pm-actions' },
-                h('button', {
-                  className: 'pm-btn is-primary',
-                  onClick: async () => {
-                    try {
-                      await post('/openlink', { url: site.url });
-                    } catch (error) {
-                      say('打开失败：' + msg(error), 'error');
-                    }
-                  }
-                }, '用系统浏览器打开'),
-                h('button', { className: 'pm-btn is-ghost', onClick: props.onClose }, '先关掉')))
-            : (loaded ? null : h('div', { className: 'pm-viewer-loading' }, h(Spinner), h('span', null, '正在加载 ' + siteHost(site.url) + ' …')))));
+              onLoad: () => {
+                loadedRef.current = true;
+                setLoaded(true);
+                setBlocked(false);
+              }
+            }))));
     }
 
+    /** 站点页：左栏站点（自己起名），右侧该站点下的网址卡片；点卡片开窗口，可同时开多个 */
     function SitesPane(props) {
       const groups = (props.groups || []).slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
       const sites = props.sites || [];
@@ -1805,36 +1851,24 @@ window.__ModuleLoader__.load({
 
       const [busy, setBusy] = useState(false);
       const [probing, setProbing] = useState(false);
-      const [groupDraft, setGroupDraft] = useState('');
-      const [quick, setQuick] = useState({ groupId: '', url: '', name: '' });
-      const [rowDraft, setRowDraft] = useState({});
+      const [activeId, setActiveId] = useState(() => {
+        const saved = readPref('dafeiyu.sites.active', '');
+        return saved || ((groups[0] && groups[0].id) || '');
+      });
+      const [creating, setCreating] = useState(false);
+      const [siteDraft, setSiteDraft] = useState('');
       const [editing, setEditing] = useState(null);
-      const [renaming, setRenaming] = useState(null);
-      const [viewing, setViewing] = useState(null);
+      const [windows, setWindows] = useState([]);
 
-      const openLink = useCallback(async (url) => {
-        try {
-          await post('/openlink', { url });
-        } catch (error) {
-          say('打开失败：' + msg(error), 'error');
-        }
-      }, [say]);
+      const active = groups.find((one) => one.id === activeId) || groups[0] || null;
+      const activeSites = active ? sites.filter((one) => one.groupId === active.id) : [];
+      const okCount = Object.keys(statuses).filter((key) => statuses[key] && statuses[key].ok).length;
+      const downCount = Object.keys(statuses).filter((key) => statuses[key] && !statuses[key].ok).length;
 
-      const probe = useCallback(async (ids) => {
-        setProbing(true);
-        try {
-          const value = await post('/sites/probe', { ids: Array.isArray(ids) ? ids : [] });
-          props.onStatuses(value.statuses || {});
-          const list = Object.keys(value.statuses || {}).map((key) => value.statuses[key]);
-          const bad = list.filter((item) => !item.ok).length;
-          if (!list.length) say('还没有可探测的网站');
-          else say(bad ? '探测完成：' + bad + ' 个不通' : '探测完成：全部正常', bad ? 'error' : 'ok');
-        } catch (error) {
-          say('探测失败：' + msg(error), 'error');
-        } finally {
-          setProbing(false);
-        }
-      }, [props, say]);
+      const selectSite = useCallback((id) => {
+        setActiveId(id);
+        writePref('dafeiyu.sites.active', id);
+      }, []);
 
       const save = useCallback(async (nextSites, nextGroups) => {
         setBusy(true);
@@ -1854,60 +1888,81 @@ window.__ModuleLoader__.load({
         }
       }, [groups, props, say, sites]);
 
-      const firstGroupId = () => (groups[0] && groups[0].id) || 'default';
-      const groupIdOf = (id) => (groups.some((one) => one.id === id) ? id : firstGroupId());
-      const quickGroupId = quick.groupId || firstGroupId();
+      const probe = useCallback(async (ids) => {
+        setProbing(true);
+        try {
+          const value = await post('/sites/probe', { ids: Array.isArray(ids) ? ids : [] });
+          props.onStatuses(value.statuses || {});
+          const list = Object.keys(value.statuses || {}).map((key) => value.statuses[key]);
+          const bad = list.filter((item) => !item.ok).length;
+          if (!list.length) say('这个站点下还没有网址');
+          else say(bad ? '探测完成：' + bad + ' 个不通' : '探测完成：全部正常', bad ? 'error' : 'ok');
+        } catch (error) {
+          say('探测失败：' + msg(error), 'error');
+        } finally {
+          setProbing(false);
+        }
+      }, [props, say]);
 
-      const startAdd = (groupId) => setEditing({
-        id: '',
-        groupId: groupIdOf(groupId || quickGroupId),
-        name: '',
-        url: '',
-        note: '',
-        accounts: []
-      });
+      const addGroup = async () => {
+        const name = String(siteDraft || '').trim();
+        if (!name) return;
+        const group = {
+          id: 'g' + Date.now().toString(36),
+          name,
+          note: '',
+          order: groups.length
+        };
+        const ok = await save(sites, groups.concat([group]));
+        if (ok) {
+          setSiteDraft('');
+          setCreating(false);
+          selectSite(group.id);
+        }
+      };
+
+      const removeGroup = async (group) => {
+        if (groups.length <= 1) {
+          say('至少要留一个站点：网址都挂在站点下面', 'error');
+          return;
+        }
+        const members = sites.filter((one) => one.groupId === group.id);
+        const ok = await props.ask('删掉站点「' + group.name + '」？' +
+          (members.length ? '它下面的 ' + members.length + ' 个网址会挪到第一个站点，不会丢。' : ''));
+        if (!ok) return;
+        const fallback = groups.find((one) => one.id !== group.id);
+        const nextSites = sites.map((one) => (one.groupId === group.id ? { ...one, groupId: fallback.id } : one));
+        const done = await save(nextSites, groups.filter((one) => one.id !== group.id));
+        if (done && activeId === group.id) selectSite(fallback.id);
+      };
+
+      const renameActive = async () => {
+        if (!active) return;
+        const next = window.prompt('站点名字', active.name);
+        const name = String(next || '').trim();
+        if (!name || name === active.name) return;
+        await save(sites, groups.map((one) => (one.id === active.id ? { ...one, name } : one)));
+      };
+
+      const startAdd = () => {
+        if (!active) {
+          say('先建一个站点，再把网址放进去', 'error');
+          setCreating(true);
+          return;
+        }
+        setEditing({ id: '', groupId: active.id, name: '', url: '', note: '', accounts: [] });
+      };
 
       const startEdit = (site) => setEditing({
         ...site,
         accounts: (site.accounts || []).map((one) => ({ ...one }))
       });
 
-      const addSite = async (groupId, rawUrl, rawName) => {
-        const url = normalizeUrlInput(rawUrl);
-        if (!url) {
-          say('先填网站地址', 'error');
-          return false;
-        }
-        return save(sites.concat([{
-          id: '',
-          groupId: groupIdOf(groupId),
-          name: String(rawName || '').trim() || siteHost(url),
-          url,
-          note: '',
-          accounts: []
-        }]), groups);
-      };
-
-      const quickAdd = async () => {
-        const ok = await addSite(quickGroupId, quick.url, quick.name);
-        if (ok) setQuick({ groupId: quick.groupId, url: '', name: '' });
-      };
-
-      const rowAdd = async (groupId) => {
-        const ok = await addSite(groupId, rowDraft[groupId], '');
-        if (ok) setRowDraft({ ...rowDraft, [groupId]: '' });
-      };
-
-      const copyUrl = async (site) => {
-        const ok = await copyText(site.url);
-        say(ok ? '地址已复制：' + site.url : '复制失败', ok ? 'ok' : 'error');
-      };
-
       const commit = async () => {
         if (!editing) return;
         const url = normalizeUrlInput(editing.url);
         if (!url) {
-          say('先填网站地址', 'error');
+          say('网址填一下，例如 10.175.2.206:8099 或 https://example.com', 'error');
           return;
         }
         const item = {
@@ -1924,259 +1979,192 @@ window.__ModuleLoader__.load({
         if (ok) setEditing(null);
       };
 
-      const remove = async (site) => {
-        const ok = await props.ask('删除「' + site.name + '」？（只从台账移除，不影响网站本身）');
+      const removeSite = async (site) => {
+        const ok = await props.ask('把「' + site.name + '」从站点里移除？（只是不在这里显示了，网站本身不受影响）');
         if (!ok) return;
+        setWindows(windows.filter((win) => win.siteId !== site.id));
         await save(sites.filter((one) => one.id !== site.id), groups);
       };
 
-      const addGroup = async () => {
-        const name = groupDraft.trim();
-        if (!name) return;
-        setGroupDraft('');
-        await save(sites, groups.concat([{
-          id: 'g' + Date.now().toString(36),
-          name,
-          note: '',
-          order: groups.length
+      const openWindow = (site) => {
+        setWindows(windows.concat([{
+          key: site.id + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+          siteId: site.id,
+          max: false
         }]));
       };
 
-      const renameGroup = async () => {
-        if (!renaming) return;
-        const name = String(renaming.name || '').trim();
-        if (!name) return;
-        const ok = await save(sites, groups.map((one) => (one.id === renaming.id ? { ...one, name } : one)));
-        if (ok) setRenaming(null);
-      };
-
-      const removeGroup = async (group) => {
-        if (groups.length <= 1) {
-          say('至少要留一个分区', 'error');
-          return;
-        }
-        const members = sites.filter((one) => one.groupId === group.id);
-        const ok = await props.ask('删掉分区「' + group.name + '」？' +
-          (members.length ? '里面的 ' + members.length + ' 个网站会挪到第一个分区，不会丢。' : ''));
-        if (!ok) return;
-        const fallback = groups.find((one) => one.id !== group.id).id;
-        const nextSites = sites.map((one) => (one.groupId === group.id ? { ...one, groupId: fallback } : one));
-        await save(nextSites, groups.filter((one) => one.id !== group.id));
-      };
-
-      const okCount = Object.keys(statuses).filter((key) => statuses[key] && statuses[key].ok).length;
-      const downCount = Object.keys(statuses).filter((key) => statuses[key] && !statuses[key].ok).length;
-      const viewingSite = viewing ? sites.find((one) => one.id === viewing.siteId) : null;
+      const patchWindow = (key, patch) => setWindows(windows.map((win) => (win.key === key ? { ...win, ...patch } : win)));
+      const closeWindow = (key) => setWindows(windows.filter((win) => win.key !== key));
 
       return h('div', { className: 'pm-main pm-sites' },
         h('header', { className: 'pm-head' },
           h('div', { className: 'pm-head-main' },
             h('div', { className: 'pm-head-title-row' },
               h('span', { className: 'pm-title' }, '站点'),
-              h('span', { className: 'pm-pill' }, groups.length + ' 个分区'),
-              h('span', { className: 'pm-pill' }, sites.length + ' 个网站'),
+              h('span', { className: 'pm-pill' }, groups.length + ' 个站点'),
+              h('span', { className: 'pm-pill' }, sites.length + ' 个网址'),
               okCount ? h('span', { className: 'pm-pill is-ok' }, '正常 ' + okCount) : null,
               downCount ? h('span', { className: 'pm-pill is-warn' }, '不通 ' + downCount) : null),
-            h('div', { className: 'pm-muted' }, '分区名字你自己起（测试、正式、内网都行）；每个网站可以记多条账号；点网站名在面板里直接打开。')),
+            h('div', { className: 'pm-muted' }, '左边是站点（自己起名，例如「物流商城206」），右边是这个站点下的网址；点网址开窗口，可以同时开好几个。')),
           h('div', { className: 'pm-head-actions' },
             h('button', {
               className: 'pm-btn',
-              onClick: () => probe([]),
-              disabled: probing || !sites.length
-            }, probing ? h(Spinner) : null, '全部探测'),
-            h('button', { className: 'pm-btn is-primary', onClick: () => startAdd(quickGroupId) }, '＋ 添加网站'))),
+              onClick: () => probe(activeSites.map((one) => one.id)),
+              disabled: probing || !activeSites.length
+            }, probing ? h(Spinner) : null, '探测'),
+            h('button', { className: 'pm-btn is-primary', onClick: startAdd }, '＋ 添加网址'))),
 
-        h('div', { className: 'pm-card pm-quickadd' },
-          h('span', { className: 'pm-quickadd-label' }, '快速添加'),
-          h('select', {
-            className: 'pm-input pm-quickadd-group',
-            value: quickGroupId,
-            title: '放进哪个分区',
-            onChange: (event) => setQuick({ ...quick, groupId: event.target.value })
-          }, groups.map((group) => h('option', { key: group.id, value: group.id }, group.name))),
-          h('input', {
-            className: 'pm-input pm-quickadd-url',
-            value: quick.url || '',
-            placeholder: '粘网址，回车就加（不带 https 也行）',
-            onChange: (event) => setQuick({ ...quick, url: event.target.value }),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') quickAdd();
-              if (event.key === 'Escape') setQuick({ ...quick, url: '' });
-            }
-          }),
-          h('input', {
-            className: 'pm-input pm-quickadd-name',
-            value: quick.name || '',
-            placeholder: '名称（可不填）',
-            onChange: (event) => setQuick({ ...quick, name: event.target.value }),
-            onKeyDown: (event) => { if (event.key === 'Enter') quickAdd(); }
-          }),
-          h('button', {
-            className: 'pm-btn is-primary',
-            onClick: quickAdd,
-            disabled: busy || !String(quick.url || '').trim()
-          }, busy ? h(Spinner) : null, '添加')),
-
-        h('div', { className: 'pm-scroll' },
-          groups.map((group) => {
-            const items = sites.filter((item) => item.groupId === group.id);
-            const draft = rowDraft[group.id] || '';
-            const isRenaming = renaming && renaming.id === group.id;
-            return h('section', { className: 'pm-group', key: group.id },
-              h('div', { className: 'pm-group-head' },
-                isRenaming
-                  ? h('input', {
-                    className: 'pm-input pm-group-rename',
-                    value: renaming.name,
-                    autoFocus: true,
-                    onChange: (event) => setRenaming({ ...renaming, name: event.target.value }),
-                    onKeyDown: (event) => {
-                      if (event.key === 'Enter') renameGroup();
-                      if (event.key === 'Escape') setRenaming(null);
-                    }
-                  })
-                  : h('button', {
-                    className: 'pm-group-name',
-                    title: '点一下改名字',
-                    onClick: () => setRenaming({ id: group.id, name: group.name })
-                  }, group.name),
-                h('span', { className: 'pm-muted' }, items.length + ' 个网站'),
-                h('div', { className: 'pm-group-actions' },
-                  isRenaming
-                    ? h('button', { className: 'pm-btn is-sm is-primary', onClick: renameGroup }, '保存名字')
-                    : null,
-                  h('button', {
-                    className: 'pm-btn is-sm is-ghost',
-                    disabled: probing || !items.length,
-                    onClick: () => probe(items.map((item) => item.id))
-                  }, '探测'),
-                  h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => startAdd(group.id) }, '＋ 网站'),
-                  h('button', { className: 'pm-btn is-sm is-ghost is-danger', onClick: () => removeGroup(group) }, '删分区'))),
-              items.length
-                ? h('div', { className: 'pm-site-grid' },
-                  items.map((site) => {
-                    const status = toneOfStatus(statuses[site.id]);
-                    const accounts = site.accounts || [];
-                    return h('article', { className: 'pm-site-card', key: site.id },
-                      h('div', { className: 'pm-site-card-head' },
-                        h('span', { className: 'pm-dot ' + status.tone, title: status.text }),
-                        h('button', {
-                          className: 'pm-site-card-name',
-                          title: '在面板里打开',
-                          onClick: () => setViewing({ siteId: site.id })
-                        }, site.name),
-                        accounts.length ? h('span', { className: 'pm-chip is-on' }, accounts.length + ' 账号') : null),
-                      h('button', {
-                        className: 'pm-site-card-url',
-                        title: '复制地址',
-                        onClick: () => copyUrl(site)
-                      }, siteHost(site.url)),
-                      site.note ? h('div', { className: 'pm-site-card-note' }, site.note) : null,
-                      h('div', { className: 'pm-site-card-status ' + status.tone }, status.text),
-                      h('div', { className: 'pm-site-card-actions' },
-                        h('button', {
-                          className: 'pm-btn is-sm is-primary',
-                          onClick: () => setViewing({ siteId: site.id })
-                        }, '打开面板'),
-                        h('button', { className: 'pm-btn is-sm', onClick: () => openLink(site.url) }, '浏览器'),
-                        h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => startEdit(site) }, '编辑'),
-                        h('button', { className: 'pm-btn is-sm is-ghost is-danger', onClick: () => remove(site) }, '删除')));
-                  }))
-                : h('div', { className: 'pm-hint' }, '这个分区还没有网站，下面一栏直接粘地址就能加。'),
-              h('div', { className: 'pm-group-add-row' },
+        h('div', { className: 'pm-sites-body' },
+          h('aside', { className: 'pm-sites-rail' },
+            h('div', { className: 'pm-sites-rail-head' },
+              h('span', null, '站点'),
+              h('button', {
+                className: 'pm-btn is-sm is-ghost',
+                title: '新建站点',
+                onClick: () => setCreating(!creating)
+              }, '＋ 新建')),
+            creating
+              ? h('div', { className: 'pm-sites-new' },
                 h('input', {
                   className: 'pm-input',
-                  value: draft,
-                  placeholder: '往「' + group.name + '」里加一个：粘网址后回车',
-                  onChange: (event) => setRowDraft({ ...rowDraft, [group.id]: event.target.value }),
+                  value: siteDraft,
+                  autoFocus: true,
+                  placeholder: '站点名，例如 物流商城206',
+                  onChange: (event) => setSiteDraft(event.target.value),
                   onKeyDown: (event) => {
-                    if (event.key === 'Enter') rowAdd(group.id);
+                    if (event.key === 'Enter') addGroup();
+                    if (event.key === 'Escape') { setCreating(false); setSiteDraft(''); }
                   }
                 }),
-                h('button', {
-                  className: 'pm-btn is-sm is-primary',
-                  disabled: busy || !draft.trim(),
-                  onClick: () => rowAdd(group.id)
-                }, '添加')));
-          }),
-          h('div', { className: 'pm-group pm-group-add' },
-            h('div', { className: 'pm-group-head' },
-              h('span', { className: 'pm-group-name' }, '新建分区'),
-              h('span', { className: 'pm-muted' }, '一个分区放一批网站，名字随你起')),
-            h('div', { className: 'pm-actions' },
-              h('input', {
-                className: 'pm-input',
-                value: groupDraft,
-                placeholder: '分区名称，例如：客户验收、内网系统',
-                onChange: (event) => setGroupDraft(event.target.value),
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter') addGroup();
-                }
-              }),
-              h('button', { className: 'pm-btn', onClick: addGroup, disabled: busy || !groupDraft.trim() }, '添加分区'))),
-          !sites.length
-            ? h('div', { className: 'pm-empty' },
-              h('p', { className: 'pm-empty-title' }, '还没有网站'),
-              h('p', { className: 'pm-muted' }, '上边「快速添加」粘个地址回车就行；也可以先建一个分区，再往里加。'))
-            : null),
+                h('div', { className: 'pm-actions' },
+                  h('button', { className: 'pm-btn is-sm is-primary', onClick: addGroup, disabled: busy }, '建好'),
+                  h('button', {
+                    className: 'pm-btn is-sm is-ghost',
+                    onClick: () => { setCreating(false); setSiteDraft(''); }
+                  }, '取消')))
+              : null,
+            h('div', { className: 'pm-sites-rail-list' },
+              groups.map((group) => h('button', {
+                key: group.id,
+                className: cx('pm-site-tab', active && active.id === group.id ? 'is-active' : ''),
+                title: group.name,
+                onClick: () => selectSite(group.id)
+              },
+                h('span', { className: 'pm-site-tab-name' }, group.name),
+                h('span', { className: 'pm-site-tab-count' }, String(sites.filter((one) => one.groupId === group.id).length))))),
+            h('div', { className: 'pm-sites-rail-foot' },
+              active
+                ? h('div', { className: 'pm-actions' },
+                  h('button', { className: 'pm-btn is-sm is-ghost', onClick: renameActive }, '改名'),
+                  h('button', {
+                    className: 'pm-btn is-sm is-ghost is-danger',
+                    onClick: () => removeGroup(active)
+                  }, '删站点'))
+                : null)),
+
+          h('section', { className: 'pm-sites-main' },
+            active
+              ? h('div', { className: 'pm-sites-main-head' },
+                h('div', { className: 'pm-sites-main-title' },
+                  h('span', { className: 'pm-title-sm' }, active.name),
+                  h('span', { className: 'pm-muted' }, activeSites.length + ' 个网址')))
+              : null,
+
+            activeSites.length
+              ? h('div', { className: 'pm-url-grid' },
+                activeSites.map((site) => {
+                  const status = toneOfStatus(statuses[site.id]);
+                  const accounts = site.accounts || [];
+                  return h('article', { className: 'pm-url-card', key: site.id },
+                    h('div', { className: 'pm-url-card-head' },
+                      h('span', { className: 'pm-dot ' + status.tone, title: status.text }),
+                      h('button', {
+                        className: 'pm-url-name',
+                        title: '在面板里打开',
+                        onClick: () => openWindow(site)
+                      }, site.name),
+                      accounts.length ? h('span', { className: 'pm-chip is-on' }, accounts.length + ' 账号') : null),
+                    h('div', { className: 'pm-url-host' }, siteHost(site.url)),
+                    site.note ? h('div', { className: 'pm-url-note' }, site.note) : null,
+                    h('div', { className: 'pm-url-status ' + status.tone }, status.text),
+                    h('div', { className: 'pm-url-actions' },
+                      h('button', { className: 'pm-btn is-sm is-primary', onClick: () => openWindow(site) }, '打开'),
+                      h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => startEdit(site) }, '编辑'),
+                      h('button', { className: 'pm-btn is-sm is-ghost is-danger', onClick: () => removeSite(site) }, '移除')));
+                }))
+              : h('div', { className: 'pm-empty pm-sites-empty' },
+                h('p', { className: 'pm-empty-title' }, active ? '「' + active.name + '」下面还没有网址' : '还没有站点'),
+                h('p', { className: 'pm-muted' }, active
+                  ? '点右上角「＋ 添加网址」，把地址粘进去，需要的话顺手把账号记上。'
+                  : '先在左边新建一个站点，再把网址加进去。'),
+                active
+                  ? h('button', { className: 'pm-btn is-primary', onClick: startAdd }, '＋ 添加网址')
+                  : h('button', { className: 'pm-btn is-primary', onClick: () => setCreating(true) }, '＋ 新建站点')),
+
+            windows.length
+              ? h('div', { className: 'pm-win-grid' },
+                windows.map((win) => {
+                  const site = sites.find((one) => one.id === win.siteId);
+                  if (!site) return null;
+                  return h(SiteWindow, {
+                    key: win.key,
+                    site: site,
+                    say: say,
+                    max: win.max,
+                    onMax: (next) => patchWindow(win.key, { max: next }),
+                    onClose: () => closeWindow(win.key)
+                  });
+                }))
+              : null)),
 
         editing
           ? h('div', { className: 'pm-modal pm-editor' },
             h('div', { className: 'pm-modal-card' },
               h('div', { className: 'pm-modal-head' },
-                h('span', { className: 'pm-modal-title' }, editing.id ? '编辑网站' : '添加网站'),
+                h('span', { className: 'pm-modal-title' }, (editing.id ? '编辑网址' : '添加网址') + (active ? ' · ' + active.name : '')),
                 h('button', { className: 'pm-btn is-sm is-ghost', onClick: () => setEditing(null) }, '关闭')),
               h('div', { className: 'pm-form-grid' },
                 h('label', null, '名称'),
                 h('input', {
                   className: 'pm-input',
                   value: editing.name || '',
-                  placeholder: '例如：订单后台',
+                  placeholder: '例如：平台管理、订单后台',
                   autoFocus: true,
-                  onChange: (event) => setEditing({ ...editing, name: event.target.value })
+                  onChange: (event) => setEditing((prev) => ({ ...prev, name: event.target.value }))
                 }),
-                h('label', null, '地址'),
+                h('label', null, '网址'),
                 h('input', {
                   className: 'pm-input',
                   value: editing.url || '',
-                  placeholder: 'https://test.example.com',
-                  onChange: (event) => setEditing({ ...editing, url: event.target.value }),
+                  placeholder: '10.175.2.206:8099 或 https://example.com/#/login',
+                  onChange: (event) => setEditing((prev) => ({ ...prev, url: event.target.value })),
                   onKeyDown: (event) => { if (event.key === 'Enter') commit(); }
                 }),
-                h('label', null, '分区'),
+                h('label', null, '归类到'),
                 h('select', {
                   className: 'pm-input',
-                  value: groupIdOf(editing.groupId),
-                  onChange: (event) => setEditing({ ...editing, groupId: event.target.value })
+                  value: (groups.some((one) => one.id === editing.groupId) ? editing.groupId : (active ? active.id : '')),
+                  onChange: (event) => setEditing((prev) => ({ ...prev, groupId: event.target.value }))
                 }, groups.map((group) => h('option', { key: group.id, value: group.id }, group.name))),
                 h('label', null, '备注'),
                 h('input', {
                   className: 'pm-input',
                   value: editing.note || '',
                   placeholder: '用途、找谁要权限等（可不填）',
-                  onChange: (event) => setEditing({ ...editing, note: event.target.value })
+                  onChange: (event) => setEditing((prev) => ({ ...prev, note: event.target.value }))
                 })),
               h('div', { className: 'pm-modal-section' },
-                h('div', { className: 'pm-modal-section-title' }, '登录账号'),
-                h('div', { className: 'pm-hint' }, '账号密码只存在本机数据目录里（明文本地保存），不会上传；复制后自己粘到登录框。'),
+                h('div', { className: 'pm-modal-section-title' }, '登录账号（可选）'),
+                h('div', { className: 'pm-hint' }, '只存在本机数据目录里，不会上传；打开窗口后点「账号」就能复制。同一域名要同时登两个账号时，网站自己的登录态可能互相顶掉，那就用「浏览器打开」配合浏览器的无痕窗口。'),
                 h(AccountEditor, {
                   value: editing.accounts || [],
-                  onChange: (accounts) => setEditing({ ...editing, accounts })
+                  onChange: (accounts) => setEditing((prev) => ({ ...prev, accounts }))
                 })),
               h('div', { className: 'pm-actions' },
                 h('button', { className: 'pm-btn is-primary', onClick: commit, disabled: busy }, busy ? h(Spinner) : null, '保存'),
-                h('button', { className: 'pm-btn is-ghost', onClick: () => setEditing(null) }, '取消')))
-          )
-          : null,
-
-        viewingSite
-          ? h(SiteViewer, {
-            site: viewingSite,
-            say,
-            onClose: () => setViewing(null)
-          })
-          : null
-      );
+                h('button', { className: 'pm-btn is-ghost', onClick: () => setEditing(null) }, '取消'))))
+          : null);
     }
 
     /* ------------------------------ 版本模块 */
@@ -3028,7 +3016,76 @@ window.__ModuleLoader__.load({
       '.pm-empty{border:1.5px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:transparent;}',
       '.pm-input:focus-visible{border-color:var(--dsw-alias-state-business-primary);}',
       '.pm-card{background:var(--dsw-alias-bg-layer-3);}',
-      '@keyframes pm-spin{to{transform:rotate(360deg);}}'
+      '@keyframes pm-spin{to{transform:rotate(360deg);}}',
+`
+      /* ---- 2.2.1 站点 → 网址 → 多窗口 ---- */
+      .pm-sites-body { flex: 1 1 auto; display: flex; gap: 10px; min-height: 0; }
+      .pm-sites-rail { flex: 0 0 186px; display: flex; flex-direction: column; gap: 6px; min-height: 0;
+        border-right: 1px solid var(--dsw-alias-border-l1); padding-right: 10px; }
+      .pm-sites-rail-head { display: flex; align-items: center; justify-content: space-between;
+        font-size: 11.5px; color: var(--dsw-alias-label-caption); }
+      .pm-sites-new { display: flex; flex-direction: column; gap: 4px; }
+      .pm-sites-rail-list { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
+      .pm-site-tab { display: flex; align-items: center; gap: 6px; padding: 7px 9px; width: 100%;
+        border: 1px solid transparent; border-radius: var(--dsw-radius-sm); background: transparent;
+        color: var(--dsw-alias-label-primary); font-size: 12.5px; text-align: left; cursor: pointer;
+        transition: background-color .12s, border-color .12s; }
+      .pm-site-tab:hover { background: var(--dsw-alias-bg-layer-2); }
+      .pm-site-tab.is-active { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-border-l2); }
+      .pm-site-tab-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-site-tab-count { font-size: 11px; color: var(--dsw-alias-label-caption); }
+      .pm-sites-rail-foot { border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 6px; }
+      .pm-sites-main { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; display: flex;
+        flex-direction: column; gap: 8px; }
+      .pm-sites-main-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .pm-sites-main-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .pm-title-sm { font-size: 14px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+      .pm-url-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 8px; }
+      .pm-url-card { display: flex; flex-direction: column; gap: 5px; padding: 10px;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md);
+        background: var(--dsw-alias-bg-layer-1); transition: border-color .12s, background-color .12s; }
+      .pm-url-card:hover { border-color: var(--dsw-alias-border-l2); }
+      .pm-url-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .pm-url-name { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; color: inherit;
+        font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; font-family: inherit;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-url-name:hover { color: var(--dsw-alias-brand-primary); }
+      .pm-url-host, .pm-url-note { font-size: 11.5px; color: var(--dsw-alias-label-caption);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-url-status { font-size: 11.5px; color: var(--dsw-alias-label-secondary); }
+      .pm-url-status.is-ok { color: var(--dsw-alias-state-success-primary); }
+      .pm-url-status.is-down { color: var(--dsw-alias-state-error-primary); }
+      .pm-url-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+      .pm-sites-empty { align-items: flex-start; }
+      .pm-win-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        gap: 10px; min-height: 240px; }
+      .pm-win { display: flex; flex-direction: column; height: 420px; min-height: 200px; overflow: hidden;
+        border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md);
+        background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv1); }
+      .pm-win.is-max { position: fixed; inset: 8px; z-index: 60; height: auto;
+        box-shadow: var(--dsw-elevation-prompt); }
+      .pm-win-bar { display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+        background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+      .pm-win-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--dsw-alias-state-success-primary); flex: 0 0 auto; }
+      .pm-win-title { font-size: 12px; font-weight: 600; max-width: 150px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
+      .pm-win-host { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--dsw-alias-label-caption);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pm-win-tools { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+      .pm-win-zoom { min-width: 34px; text-align: center; font-size: 11px; color: var(--dsw-alias-label-caption); }
+      .pm-win-accounts { max-height: 132px; overflow: auto; padding: 6px 8px;
+        background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+      .pm-win-body { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #fff; }
+      .pm-win-frame { position: absolute; inset: 0; overflow: hidden; }
+      .pm-win-iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+      .pm-win-loading { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center;
+        justify-content: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary);
+        background: var(--dsw-alias-bg-layer-1); }
+      .pm-win-blocked { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 8px; padding: 18px; text-align: center;
+        background: var(--dsw-alias-bg-layer-1); }
+      .pm-win-blocked-title { font-size: 13px; font-weight: 600; }
+`,
     ].join('\n');
 
     /* ------------------------------------------------------------ 注册 */
