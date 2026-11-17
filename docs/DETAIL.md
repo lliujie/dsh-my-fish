@@ -1,4 +1,4 @@
-# 大肥鱼 3.1 · 详细说明
+# 大肥鱼 3.2 · 详细说明
 
 面向要改它、或在它上面加东西的人。
 
@@ -130,8 +130,9 @@ iframe + 缩放（0.6–1.8，`transform:scale` 配合 `width/height:100/zoom%`�
 | POST | `/file/mkdir` | 建目录 |
 | POST | `/preview`、GET `/preview/tile` | Office 分页渲染与贴图 |
 | POST | `/open`、`/openlink` | 用系统程序打开文件 / 用浏览器打开网址 |
-| GET | `/sessions` | 可绑定的会话列表 |
-| POST | `/session/bind`、`/session/new` | 绑会话 / 新建会话 |
+| GET | `/sessions` | 可绑定的会话列表（带人话 `title` 与 `cwd`，已绑场景的排前面） |
+| POST | `/session/bind`、`/session/new` | 绑会话 / 新建会话（新建时自动把标题改成「场景名 · 面板名」） |
+| POST | `/session/rename` | 改会话标题，列表里显示的就是这个名字 |
 | GET | `/chat/messages`、`/chat/state` | 对话内容与运行状态 |
 | POST | `/chat/send` | 发消息 |
 | POST | `/claim` | 认领身份（把定位卡与 §〇 发给会话） |

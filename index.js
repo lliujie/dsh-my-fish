@@ -996,17 +996,49 @@ function boundSessionOf(state, scene, panel) {
   return String(stored || panel.sessionId || '');
 }
 
-async function listSessions(ctx) {
+/** 会话列表：给每个会话一个人话名字（场景名 + 会话），别把 session-xxxx 直接摆给用户看。 */
+async function listSessions(ctx, root, state) {
   const controller = sessionControllerOf(ctx);
   if (!controller) return [];
+  let scenes = [];
+  try {
+    scenes = await readScenes(root);
+  } catch {
+    scenes = [];
+  }
+  const nameOf = new Map();
+  for (const scene of scenes) nameOf.set(scene.id, scene.name || scene.id);
+  const boundBy = new Map();
+  const boundSessions = (state && state.settings && state.settings.sessions) || {};
+  for (const key of Object.keys(boundSessions)) {
+    const sceneId = String(key).split('/')[0];
+    boundBy.set(String(boundSessions[key]), nameOf.get(sceneId) || sceneId);
+  }
+  const looksAuto = (title, sessionId) => {
+    if (!title) return true;
+    if (title === sessionId) return true;
+    if (title.startsWith(sessionId.slice(0, 8))) return true;
+    return /^session-[0-9a-f-]{6,}$/i.test(title);
+  };
   const out = [];
   const pushList = (list) => {
     for (const item of Array.isArray(list) ? list : []) {
       const sessionId = String(item.sessionId || item.id || '');
       if (!sessionId) continue;
+      // mnemon 的定时巡检会话对用户没意义，别塞进选择列表
+      if (/^mnemon-run-/i.test(sessionId)) continue;
+      const projections = (item.projections && item.projections.values) || {};
+      const raw = String(projections.title || item.title || item.name || '').trim();
+      const sceneName = boundBy.get(sessionId) || '';
+      const cwd = String(item.cwd || '');
+      const title = looksAuto(raw, sessionId)
+        ? (sceneName ? sceneName + ' · 常驻会话' : (cwd ? path.basename(cwd) + ' · 会话' : '会话 ' + sessionId.slice(-6)))
+        : raw;
       out.push({
         sessionId,
-        title: String(item.title || item.name || sessionId.slice(0, 24)),
+        title,
+        cwd,
+        scene: sceneName,
         updatedAt: String(item.updatedAt || item.time || '')
       });
     }
@@ -1021,7 +1053,12 @@ async function listSessions(ctx) {
   } catch {
     /* 忽略 */
   }
-  return out.slice(0, 80);
+  out.sort((a, b) => {
+    if (a.scene && !b.scene) return -1;
+    if (!a.scene && b.scene) return 1;
+    return 0;
+  });
+  return out.slice(0, 60);
 }
 
 const PERMISSION_PRESETS = [
@@ -1575,7 +1612,7 @@ async function handleGet(ctx, req, res, route, params, root) {
   }
 
   if (route === '/sessions') {
-    sendJson(res, 200, { ok: true, value: { items: await listSessions(ctx) } });
+    sendJson(res, 200, { ok: true, value: { items: await listSessions(ctx, root, state) } });
     return;
   }
 
@@ -1719,6 +1756,18 @@ async function handlePost(ctx, req, res, route, root) {
     return;
   }
 
+  if (route === '/session/rename') {
+    const sessionId = cleanText(payload.sessionId, 200, '');
+    if (!sessionId) throw fail(400, 'BAD_SESSION', '要选一个会话');
+    const title = cleanText(payload.title, 80, '');
+    if (!title) throw fail(400, 'BAD_TITLE', '名字不能为空');
+    const controller = requireController(ctx);
+    if (typeof controller.rename !== 'function') throw fail(501, 'NOT_SUPPORTED', '当前版本不支持改名');
+    const value = await controller.rename({ sessionId, title });
+    sendJson(res, 200, { ok: true, value: { title: String((value && value.title) || title) } });
+    return;
+  }
+
   if (route === '/session/new') {
     const scene = await readScene(root, String(payload.sceneId || ''));
     if (!scene) throw fail(404, 'NO_SCENE', '找不到这个场景');
@@ -1727,10 +1776,18 @@ async function handlePost(ctx, req, res, route, root) {
     const created = await controller.create(scene.root ? { cwd: scene.root } : { cwd: root });
     const sessionId = String((created && created.sessionId) || '');
     if (!sessionId) throw fail(502, 'CREATE_FAILED', '新建会话失败');
+    const title = cleanText(payload.title, 80, '') || (scene.name || scene.id) + ' · ' + (panel.title || 'AI');
+    if (typeof controller.rename === 'function') {
+      try {
+        await controller.rename({ sessionId, title });
+      } catch {
+        /* 改名失败不影响会话可用，列表里会退回场景名 */
+      }
+    }
     state.settings.sessions[sessionKey(scene.id, panel.id)] = sessionId;
     await saveState(root, state);
     await updateSceneIndex(root, scene, panel, sessionId);
-    sendJson(res, 200, { ok: true, value: { sessionId } });
+    sendJson(res, 200, { ok: true, value: { sessionId, title } });
     return;
   }
 

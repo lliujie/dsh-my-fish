@@ -372,6 +372,21 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const renameSession = async (item) => {
+        const next = window.prompt('给这个会话起个名字（比如「福利商城 · 日常」）', item.title || '');
+        if (!next || !next.trim()) return;
+        setBusy('rename');
+        try {
+          await post('/session/rename', { sessionId: item.sessionId, title: next.trim() });
+          say('会话已改名', 'ok');
+          await loadSessions();
+        } catch (error) {
+          say(msg(error), 'error');
+        } finally {
+          setBusy('');
+        }
+      };
+
       const claim = async () => {
         setBusy('claim');
         try {
@@ -534,18 +549,35 @@ window.__ModuleLoader__.load({
               disabled: busy !== '',
               onClick: () => { setPicker(picker === 'session' ? '' : 'session'); void loadSessions(); }
             }, '会话'),
-            h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !bound || busy !== '', onClick: claim }, '认领身份'))),
+            h('button', {
+              type: 'button',
+              className: 'pm-btn is-mini is-ghost',
+              disabled: !bound || busy !== '',
+              title: '把「铁律 / 共享层 / 定位卡 / §〇」一次性发给这个会话，让它知道自己属于哪个场景。不发也能正常聊天。',
+              onClick: claim
+            }, '认领身份'))),
+        bound ? null : h('div', { className: 'pm-claim-hint' }, '先点「会话」选一个（或新建），再点「认领身份」把场景身份发过去 —— 不发也能聊，只是它不知道自己在哪个场景。'),
         picker === 'session' ? h('div', { className: 'pm-session-list' },
           h('div', { className: 'pm-session-head' }, '选一个会话绑到这块面板'),
           h('button', { type: 'button', className: 'pm-btn is-mini is-primary', disabled: busy !== '', onClick: newSession }, busy === 'new' ? '新建中…' : '＋ 新建会话'),
-          sessions.length ? sessions.map((item) => h('button', {
+          sessions.length ? sessions.map((item) => h('div', {
             key: item.sessionId,
-            type: 'button',
-            className: cx('pm-session-item', item.sessionId === sessionId && 'is-active'),
-            onClick: () => void bindSession(item.sessionId)
+            className: cx('pm-session-row', item.sessionId === sessionId && 'is-active')
           },
-            h('span', { className: 'pm-session-title' }, item.title || item.sessionId.slice(0, 16)),
-            h('span', { className: 'pm-session-id' }, item.sessionId.slice(0, 12))))
+            h('button', {
+              type: 'button',
+              className: 'pm-session-item',
+              title: item.cwd || item.title || '',
+              onClick: () => void bindSession(item.sessionId)
+            },
+              h('span', { className: 'pm-session-title' }, item.title || '（还没起名字的会话）')),
+            h('button', {
+              type: 'button',
+              className: 'pm-btn is-mini is-ghost',
+              disabled: busy !== '',
+              title: '给这个会话改个名字',
+              onClick: () => void renameSession(item)
+            }, '改名')))
             : h('div', { className: 'pm-session-empty' }, '没读到会话列表，可以直接点「新建会话」')) : null,
         h(ChatFeed, { items, running, bound }),
         notices.length ? h('div', { className: 'pm-notices' }, notices.map((item, index) => h('div', { key: `${item.time}-${index}`, className: 'pm-notice' }, item.text))) : null,
@@ -1206,22 +1238,30 @@ window.__ModuleLoader__.load({
 
     function NewSceneForm(props) {
       const { onClose, onCreated, say } = props;
-      const [form, setForm] = useState({ id: '', name: '', root: '', cols: 4, preset: 'doc' });
+      const [form, setForm] = useState({ name: '', root: '', cols: 4, preset: 'doc' });
       const [busy, setBusy] = useState(false);
 
+      /** 从场景名生成 id；中文名生成不出字母时退回时间戳，用户完全不用管。 */
+      const autoId = () => {
+        const fromName = String(form.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        if (fromName) return fromName.slice(0, 40);
+        return 'scene-' + Date.now().toString(36);
+      };
+
       const submit = async () => {
-        const id = (form.id || form.name || '').replace(/[^\w.\-]/g, '-').toLowerCase();
-        if (!id) {
-          say('给场景起个 id（英文或数字）', 'error');
+        const name = String(form.name || '').trim();
+        if (!name) {
+          say('先给场景起个名字（比如「物流商城 206」）', 'error');
           return;
         }
+        const id = autoId();
         setBusy(true);
         try {
           const panels = form.preset === 'doc'
             ? [
               { id: 'p-doc', title: '文档', type: 'view', col: 1, row: 1, w: 3, h: 3 },
               { id: 'p-file', title: '文件', type: 'file', col: 4, row: 1, w: 1, h: 3 },
-              { id: 'p-note', title: '场景记忆', type: 'note', source: 'memory', col: 1, row: 4, w: 2, h: 2 },
+              { id: 'p-note', title: '记忆层', type: 'layers', col: 1, row: 4, w: 2, h: 2 },
               { id: 'p-ai', title: 'AI', type: 'harness', col: 3, row: 4, w: 2, h: 2 }
             ]
             : [
@@ -1250,13 +1290,13 @@ window.__ModuleLoader__.load({
         ]
       },
         h('div', { className: 'pm-form-grid' },
-          h('label', { className: 'pm-field' }, h('span', null, '场景 id'), h('input', { className: 'pm-input', value: form.id, placeholder: '如 logistics-206', onChange: (event) => setForm({ ...form, id: event.target.value }) })),
-          h('label', { className: 'pm-field' }, h('span', null, '场景名称'), h('input', { className: 'pm-input', value: form.name, placeholder: '如 物流商城 206', onChange: (event) => setForm({ ...form, name: event.target.value }) })),
+          h('label', { className: 'pm-field' }, h('span', null, '场景名称'), h('input', { className: 'pm-input', value: form.name, placeholder: '如 物流商城 206', autoFocus: true, onChange: (event) => setForm({ ...form, name: event.target.value }) })),
           h('label', { className: 'pm-field' }, h('span', null, '工作根目录'), h('input', { className: 'pm-input', value: form.root, placeholder: 'D:\\蓝宝\\01_福利商城', onChange: (event) => setForm({ ...form, root: event.target.value }) })),
           h('label', { className: 'pm-field' }, h('span', null, '列数'), h('input', { className: 'pm-input', type: 'number', min: 1, max: 8, value: form.cols, onChange: (event) => setForm({ ...form, cols: event.target.value }) })),
           h('label', { className: 'pm-field' }, h('span', null, '初始面板'), h('select', { className: 'pm-input', value: form.preset, onChange: (event) => setForm({ ...form, preset: event.target.value }) },
             h('option', { value: 'doc' }, '文档 + 文件 + 记忆 + AI（4 列）'),
-            h('option', { value: 'work' }, '文件 + AI（3 列）')))));
+            h('option', { value: 'work' }, '文件 + AI（3 列）')))),
+        h('div', { className: 'pm-form-hint' }, '场景内部 id 会自动生成，你不用管。'));
     }
 
     function VersionPanel(props) {
@@ -1422,6 +1462,19 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const deleteScene = async (scene) => {
+        const ok = window.confirm('删除场景「' + scene.name + '」？\n只删这份场景配置（面板布局与绑定），你目录里的文件一个都不动。');
+        if (!ok) return;
+        try {
+          await post('/scene/delete', { id: scene.id });
+          say('场景「' + scene.name + '」已删除', 'ok');
+          if (activeId === scene.id) setActiveId('');
+          await refresh();
+        } catch (error) {
+          say(msg(error), 'error');
+        }
+      };
+
       const onSavedScene = async (scene) => {
         setEditing(null);
         await refresh();
@@ -1461,15 +1514,24 @@ window.__ModuleLoader__.load({
             h('span', { className: 'pm-brand-name' }, '大肥鱼'),
             snapshot && snapshot.version ? h('span', { className: 'pm-brand-version' }, `v${snapshot.version.version}`) : null),
           h('div', { className: 'pm-tabs' },
-            scenes.map((scene) => h('button', {
+            scenes.map((scene) => h('div', {
               key: scene.id,
-              type: 'button',
-              title: `${scene.name}${scene.description ? ' · ' + scene.description : ''}`,
-              className: cx('pm-tab', scene.id === activeId && 'is-active'),
-              onClick: () => void switchScene(scene.id)
-            }, scene.name)),
+              className: cx('pm-tab-wrap', scene.id === activeId && 'is-active')
+            },
+              h('button', {
+                type: 'button',
+                title: `${scene.name}${scene.description ? ' · ' + scene.description : ''}`,
+                className: cx('pm-tab', scene.id === activeId && 'is-active'),
+                onClick: () => void switchScene(scene.id)
+              }, scene.name),
+              h('button', {
+                type: 'button',
+                className: 'pm-tab-x',
+                title: '删除这个场景（只删配置，不动文件）',
+                onClick: (event) => { event.stopPropagation(); void deleteScene(scene); }
+              }, '×'))),
             scenes.length ? null : h('span', { className: 'pm-tabs-empty' }, '还没有场景'),
-            h('button', { type: 'button', className: 'pm-tab is-add', onClick: () => setCreating(true) }, '＋')),
+            h('button', { type: 'button', className: 'pm-tab is-add', title: '新建场景', onClick: () => setCreating(true) }, '＋')),
           h('div', { className: 'pm-top-actions' },
             h('button', { type: 'button', className: 'pm-btn is-mini', disabled: busy, onClick: () => void refresh() }, busy ? '刷新中…' : '⟳ 刷新'),
             h('button', { type: 'button', className: 'pm-btn is-mini', disabled: !active, onClick: () => setEditing(active) }, '编辑场景'),
@@ -1499,6 +1561,12 @@ window.__ModuleLoader__.load({
       '.pm-tab.is-active{background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-shadow-lv1);}',
       '.pm-tab.is-add{color:var(--dsw-alias-label-caption);width:26px;padding:0;}',
       '.pm-tabs-empty{font-size:12px;color:var(--dsw-alias-label-caption);padding:0 6px;}',
+      '.pm-tab-wrap{display:inline-flex;align-items:center;border-radius:var(--dsw-radius-sm);}',
+      '.pm-tab-wrap:hover{background:var(--dsw-alias-bg-layer-2);}',
+      '.pm-tab-wrap .pm-tab{padding-right:6px;}',
+      '.pm-tab-x{border:0;background:transparent;color:var(--dsw-alias-label-caption);width:18px;height:18px;line-height:1;border-radius:4px;cursor:pointer;font-size:12px;opacity:.45;transition:opacity .12s,background-color .12s,color .12s;}',
+      '.pm-tab-wrap:hover .pm-tab-x{opacity:1;}',
+      '.pm-tab-x:hover{background:var(--dsw-alias-state-error-primary);color:#fff;}',
       '.pm-top-actions{margin-left:auto;display:flex;align-items:center;gap:6px;}',
       '.pm-grid{display:grid;flex:1 1 auto;min-height:0;gap:8px;padding:8px 10px 10px;}',
       '.pm-cell{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;}',
@@ -1518,7 +1586,10 @@ window.__ModuleLoader__.load({
       '.pm-btn:hover{background:var(--dsw-alias-bg-layer-2);}',
       '.pm-btn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px;}',
       '.pm-btn:disabled{opacity:.45;cursor:default;}',
-      '.pm-btn.is-primary{background:var(--dsw-alias-brand-primary);border-color:transparent;color:#fff;}',
+      '.pm-btn.is-primary{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 82%, var(--dsw-alias-label-primary));border-color:transparent;color:var(--dsw-alias-bg-base);font-weight:600;}',
+      '.pm-btn.is-primary:hover{background:color-mix(in srgb, var(--dsw-alias-brand-primary) 70%, var(--dsw-alias-label-primary));}',
+      '.pm-btn.is-ghost{background:transparent;border-color:transparent;color:var(--dsw-alias-label-secondary);}',
+      '.pm-btn.is-ghost:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
       '.pm-btn.is-danger{color:var(--dsw-alias-state-error-primary);}',
       '.pm-btn.is-mini{height:24px;padding:0 8px;font-size:11.5px;}',
       '.pm-tree{flex:1 1 auto;min-height:0;overflow:auto;padding:6px;}',
@@ -1611,6 +1682,12 @@ window.__ModuleLoader__.load({
       '.pm-session-item.is-active{border-color:var(--dsw-alias-brand-primary);}',
       '.pm-session-id{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-caption);}',
       '.pm-session-empty{font-size:11.5px;color:var(--dsw-alias-label-caption);}',
+      '.pm-session-row{display:flex;align-items:center;gap:4px;}',
+      '.pm-session-row .pm-session-item{flex:1 1 auto;min-width:0;}',
+      '.pm-session-row.is-active .pm-session-item{border-color:var(--dsw-alias-brand-primary);}',
+      '.pm-session-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '.pm-claim-hint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-caption);padding:4px 10px 0;}',
+      '.pm-form-hint{font-size:11px;color:var(--dsw-alias-label-caption);margin-top:6px;}',
       '.pm-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;height:100%;padding:18px;color:var(--dsw-alias-label-caption);text-align:center;}',
       '.pm-empty-title{font-size:12.5px;color:var(--dsw-alias-label-secondary);}',
       '.pm-empty-hint{font-size:11.5px;}',
